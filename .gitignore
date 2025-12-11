@@ -1,0 +1,9 @@
+OptMathKernels/build/
+OptMathKernels/build*/
+build/
+build*/
+*.o
+*.a
+*.so
+*.dylib
+.DS_Store
