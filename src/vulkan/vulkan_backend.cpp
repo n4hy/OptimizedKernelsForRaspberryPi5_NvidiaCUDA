@@ -5,6 +5,8 @@
 #include <cstring>
 #include <stdexcept>
 #include <cmath>
+#include <filesystem>
+#include <map>
 
 namespace optmath {
 namespace vulkan {
@@ -14,16 +16,30 @@ namespace vulkan {
 
 // Utility: Read file
 static std::vector<char> readFile(const std::string& filename) {
-    std::ifstream file(filename, std::ios::ate | std::ios::binary);
-    if (!file.is_open()) {
-        throw std::runtime_error("failed to open file: " + filename);
+    // Try multiple paths:
+    // 1. Current directory
+    // 2. Relative to executable (simplistic check for build dir structure)
+    // 3. System install path (e.g. /usr/local/share/optmathkernels/shaders/)
+
+    std::vector<std::string> paths = {
+        filename,
+        "../src/" + filename, // For build/examples/demo -> build/src/
+        "/usr/local/share/optmathkernels/shaders/" + filename,
+        "/usr/share/optmathkernels/shaders/" + filename
+    };
+
+    for (const auto& path : paths) {
+        std::ifstream file(path, std::ios::ate | std::ios::binary);
+        if (file.is_open()) {
+            size_t fileSize = (size_t) file.tellg();
+            std::vector<char> buffer(fileSize);
+            file.seekg(0);
+            file.read(buffer.data(), fileSize);
+            file.close();
+            return buffer;
+        }
     }
-    size_t fileSize = (size_t) file.tellg();
-    std::vector<char> buffer(fileSize);
-    file.seekg(0);
-    file.read(buffer.data(), fileSize);
-    file.close();
-    return buffer;
+    throw std::runtime_error("failed to open file: " + filename);
 }
 
 // Utility: Create Buffer
@@ -184,10 +200,97 @@ uint32_t VulkanContext::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlag
 }
 
 // -----------------------------------------------------------------------------
+// Pipeline Cache (Simple)
+// -----------------------------------------------------------------------------
+
+struct PipelineState {
+    VkPipeline pipeline;
+    VkPipelineLayout layout;
+    VkDescriptorSetLayout descLayout;
+    VkShaderModule shaderModule;
+};
+
+// Map shader name to pipeline state
+static std::map<std::string, PipelineState> g_pipelineCache;
+
+static PipelineState getOrCreatePipeline(const std::string& shaderName, size_t bufferCount, size_t pushConstSize) {
+    if (g_pipelineCache.count(shaderName)) {
+        return g_pipelineCache[shaderName];
+    }
+
+    VulkanContext& ctx = VulkanContext::get();
+    VkDevice device = ctx.device;
+
+    auto code = readFile(shaderName);
+
+    VkShaderModuleCreateInfo createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    createInfo.codeSize = code.size();
+    createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+
+    VkShaderModule shaderModule;
+    if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create shader module for " + shaderName);
+    }
+
+    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    for(size_t i=0; i<bufferCount; ++i) {
+        VkDescriptorSetLayoutBinding b{};
+        b.binding = i;
+        b.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        b.descriptorCount = 1;
+        b.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings.push_back(b);
+    }
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = (uint32_t)bindings.size();
+    layoutInfo.pBindings = bindings.data();
+
+    VkDescriptorSetLayout descriptorSetLayout;
+    vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout);
+
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = pushConstSize;
+
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
+    if(pushConstSize > 0) {
+        pipelineLayoutInfo.pushConstantRangeCount = 1;
+        pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+    }
+
+    VkPipelineLayout pipelineLayout;
+    vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout);
+
+    VkPipelineShaderStageCreateInfo shaderStageInfo{};
+    shaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    shaderStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    shaderStageInfo.module = shaderModule;
+    shaderStageInfo.pName = "main";
+
+    VkComputePipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipelineInfo.stage = shaderStageInfo;
+    pipelineInfo.layout = pipelineLayout;
+
+    VkPipeline computePipeline;
+    vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline);
+
+    PipelineState state = {computePipeline, pipelineLayout, descriptorSetLayout, shaderModule};
+    g_pipelineCache[shaderName] = state;
+    return state;
+}
+
+
+// -----------------------------------------------------------------------------
 // Helper: Run Compute Shader
 // -----------------------------------------------------------------------------
-// This is a simplified "run one shot" function for the demo.
-// In production, you would cache pipelines and descriptors.
 
 struct BufferWrapper {
     VkBuffer buffer;
@@ -224,80 +327,12 @@ static void run_compute(const std::string& shaderName,
     VulkanContext& ctx = VulkanContext::get();
     VkDevice device = ctx.device;
 
-    // Load Shader
-    // Assumes shaders are installed to a known location relative to binary or fixed path
-    // For this demo, we assume they are adjacent to the binary or in a specific folder.
-    // The build script installs them to ${CMAKE_INSTALL_DATADIR}/optmathkernels/shaders
-    // But for local running, we might look in the current dir.
-    // We will try a few paths.
-    std::string path = shaderName;
-    // (In a real app, resource resolution is more robust)
+    // Get Cached Pipeline
+    PipelineState state = getOrCreatePipeline(shaderName, buffers.size(), pushConstSize);
 
-    // We expect the .spv extension
-    auto code = readFile(path);
+    // Descriptors (Created per call for simplicity in handling buffer ptrs,
+    // but could also be cached if buffers reused. For this level of optimization, pool management is acceptable overhead vs pipeline creation).
 
-    VkShaderModuleCreateInfo createInfo{};
-    createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    createInfo.codeSize = code.size();
-    createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
-
-    VkShaderModule shaderModule;
-    if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS) {
-        throw std::runtime_error("failed to create shader module for " + shaderName);
-    }
-
-    // Pipeline Layout
-    std::vector<VkDescriptorSetLayoutBinding> bindings;
-    for(size_t i=0; i<buffers.size(); ++i) {
-        VkDescriptorSetLayoutBinding b{};
-        b.binding = i;
-        b.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        b.descriptorCount = 1;
-        b.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        bindings.push_back(b);
-    }
-
-    VkDescriptorSetLayoutCreateInfo layoutInfo{};
-    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = (uint32_t)bindings.size();
-    layoutInfo.pBindings = bindings.data();
-
-    VkDescriptorSetLayout descriptorSetLayout;
-    vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout);
-
-    VkPushConstantRange pushConstantRange{};
-    pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    pushConstantRange.offset = 0;
-    pushConstantRange.size = pushConstSize;
-
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.setLayoutCount = 1;
-    pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
-    if(pushConstSize > 0) {
-        pipelineLayoutInfo.pushConstantRangeCount = 1;
-        pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
-    }
-
-    VkPipelineLayout pipelineLayout;
-    vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout);
-
-    // Pipeline
-    VkPipelineShaderStageCreateInfo shaderStageInfo{};
-    shaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    shaderStageInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    shaderStageInfo.module = shaderModule;
-    shaderStageInfo.pName = "main";
-
-    VkComputePipelineCreateInfo pipelineInfo{};
-    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    pipelineInfo.stage = shaderStageInfo;
-    pipelineInfo.layout = pipelineLayout;
-
-    VkPipeline computePipeline;
-    vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &computePipeline);
-
-    // Descriptors
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     poolSize.descriptorCount = (uint32_t)buffers.size();
@@ -316,7 +351,7 @@ static void run_compute(const std::string& shaderName,
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = descriptorPool;
     allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &descriptorSetLayout;
+    allocInfo.pSetLayouts = &state.descLayout;
 
     vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet);
 
@@ -353,10 +388,10 @@ static void run_compute(const std::string& shaderName,
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
     vkBeginCommandBuffer(commandBuffer, &beginInfo);
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, computePipeline);
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, state.pipeline);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, state.layout, 0, 1, &descriptorSet, 0, nullptr);
     if(pushConstSize > 0) {
-        vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, pushConstSize, pushConstData);
+        vkCmdPushConstants(commandBuffer, state.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, pushConstSize, pushConstData);
     }
     vkCmdDispatch(commandBuffer, groupCountX, 1, 1);
     vkEndCommandBuffer(commandBuffer);
@@ -370,13 +405,11 @@ static void run_compute(const std::string& shaderName,
     vkQueueSubmit(ctx.computeQueue, 1, &submitInfo, VK_NULL_HANDLE);
     vkQueueWaitIdle(ctx.computeQueue);
 
-    // Cleanup
+    // Cleanup Command Buffer & Descriptor Pool (Pipeline is cached)
     vkFreeCommandBuffers(device, ctx.commandPool, 1, &commandBuffer);
     vkDestroyDescriptorPool(device, descriptorPool, nullptr);
-    vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
-    vkDestroyPipeline(device, computePipeline, nullptr);
-    vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-    vkDestroyShaderModule(device, shaderModule, nullptr);
+    // Note: We do not destroy pipeline/layout here as they are cached.
+    // They will leak at shutdown in this simple implementation, which is acceptable for a singleton.
 }
 
 // -----------------------------------------------------------------------------

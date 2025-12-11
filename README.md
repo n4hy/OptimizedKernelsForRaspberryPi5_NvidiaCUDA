@@ -6,9 +6,9 @@
 
 ## 🚀 Features
 
-*   **Core**: Wraps [Eigen3](https://eigen.tuxfamily.org/) for robust linear algebra on the CPU.
 *   **NEON**: Hand-tuned ARMv8 NEON intrinsics for SIMD acceleration on 64-bit ARM (aarch64).
 *   **Vulkan**: Compute shader backend for offloading massive parallel tasks to the GPU (VideoCore VII on Pi 5).
+*   **Eigen Integration**: Seamlessly switch between CPU (Eigen), NEON, and Vulkan backends using Eigen types (`Eigen::VectorXf`, etc.).
 *   **Easy Integration**: Standard CMake package that installs to `/usr/local` (or custom prefix) and integrates via `find_package`.
 
 ---
@@ -52,7 +52,7 @@ sudo cmake --install .
 | :--- | :--- | :--- |
 | `ENABLE_NEON` | `ON` | Enable ARM NEON intrinsics. Automatically simulated/disabled on non-ARM. |
 | `ENABLE_VULKAN` | `ON` | Enable Vulkan backend. Requires Vulkan headers and `glslangValidator`. |
-| `BUILD_EXAMPLES` | `ON` | Build example executable (`example_main`). |
+| `BUILD_EXAMPLES` | `ON` | Build example executable (`demo`). |
 | `BUILD_TESTS` | `ON` | Build unit tests. |
 
 ---
@@ -71,51 +71,45 @@ target_link_libraries(my_app PRIVATE OptMathKernels::OptMathKernels)
 
 ### API Reference
 
-#### 1. Core (Eigen Wrapper)
-Header: `#include <optmath/core.hpp>`
-
-```cpp
-#include <optmath/core.hpp>
-
-optmath::Core core;
-
-// Verify Eigen is linked and working
-bool ok = core.verify_eigen();
-
-// SAXPY: Result = a * x + y
-// Uses Eigen::Map for zero-copy efficiency where possible.
-std::vector<float> x = {1, 2, 3};
-std::vector<float> y = {4, 5, 6};
-std::vector<float> res = core.saxpy(2.0f, x, y);
-```
-
-#### 2. NEON (ARM SIMD)
+#### 1. NEON (ARM SIMD)
 Header: `#include <optmath/neon_kernels.hpp>`
 
 ```cpp
 #include <optmath/neon_kernels.hpp>
+#include <Eigen/Dense>
 
-// Check runtime availability (or compilation support)
+// Check runtime availability
 if (optmath::neon::is_available()) {
-    // Hardware accelerated vector addition
-    // Falls back to empty vector if NEON is disabled at compile time.
-    std::vector<float> res = optmath::neon::add_vectors(x, y);
+    Eigen::VectorXf a(10), b(10);
+    // ... fill a, b ...
+
+    // Hardware accelerated operations
+    Eigen::VectorXf sum = optmath::neon::neon_add(a, b);
+    float dot = optmath::neon::neon_dot(a, b);
+
+    // In-place activations
+    optmath::neon::neon_relu(a);
 }
 ```
 
-#### 3. Vulkan (GPU Compute)
+#### 2. Vulkan (GPU Compute)
 Header: `#include <optmath/vulkan_backend.hpp>`
 
 ```cpp
 #include <optmath/vulkan_backend.hpp>
+#include <Eigen/Dense>
 
 if (optmath::vulkan::is_available()) {
-    // Initialize context (selects physical device, etc.)
-    if (optmath::vulkan::init()) {
-        // Run compute shader: adds scalar to every element
-        float scalar = 5.0f;
-        std::vector<float> res = optmath::vulkan::compute_add_scalar(x, scalar);
-    }
+    Eigen::VectorXf a(1000), b(1000);
+    // ... fill a, b ...
+
+    // Offload to GPU
+    Eigen::VectorXf sum = optmath::vulkan::vulkan_vec_add(a, b);
+    float dot = optmath::vulkan::vulkan_vec_dot(a, b);
+
+    // 1D Convolution
+    Eigen::VectorXf x(1000), h(50);
+    Eigen::VectorXf y = optmath::vulkan::vulkan_conv1d(x, h);
 }
 ```
 
@@ -125,3 +119,4 @@ if (optmath::vulkan::is_available()) {
 
 *   **Vulkan**: Ensure your Pi is running a recent OS (Bookworm 64-bit recommended) with Vulkan drivers installed (`mesa-vulkan-drivers`).
 *   **Overclocking**: While this library is optimized for performance, ensure adequate cooling if running heavy compute loops on the Pi 5.
+*   **Performance**: Small workloads are generally faster on CPU/NEON due to GPU dispatch overhead. Vulkan shines with large vectors (N > 100k).
