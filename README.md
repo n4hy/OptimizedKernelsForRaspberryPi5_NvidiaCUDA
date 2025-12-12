@@ -34,7 +34,8 @@ sudo apt install -y \
     libvulkan-dev \
     mesa-vulkan-drivers \
     vulkan-tools \
-    glslang-tools
+    glslang-tools \
+    glslc
 ```
 
 > **Note:** GoogleTest is automatically fetched during the build (via CMake `FetchContent`), so `libgtest-dev` is not strictly required but recommended for caching.

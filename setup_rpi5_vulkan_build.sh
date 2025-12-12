@@ -39,6 +39,7 @@ sudo apt install -y \
     mesa-vulkan-drivers \
     vulkan-tools \
     glslang-tools \
+    glslc \
     lshw
 
 echo
