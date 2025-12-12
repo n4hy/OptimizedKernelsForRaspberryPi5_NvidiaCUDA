@@ -27,3 +27,7 @@ add_test(NAME test_vulkan_dsp COMMAND test_vulkan_dsp)
 add_executable(test_vulkan_advanced test_vulkan_advanced.cpp)
 target_link_libraries(test_vulkan_advanced PRIVATE OptMathKernels::OptMathKernels gtest gtest_main)
 add_test(NAME test_vulkan_advanced COMMAND test_vulkan_advanced)
+
+add_executable(test_neon_kernels test_neon_kernels.cpp)
+target_link_libraries(test_neon_kernels PRIVATE OptMathKernels::OptMathKernels gtest gtest_main)
+add_test(NAME test_neon_kernels COMMAND test_neon_kernels)

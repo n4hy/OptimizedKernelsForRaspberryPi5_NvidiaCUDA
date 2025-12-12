@@ -118,6 +118,20 @@ void neon_add_f32(float* out, const float* a, const float* b, std::size_t n) {
 #endif
 }
 
+void neon_sub_f32(float* out, const float* a, const float* b, std::size_t n) {
+#ifdef OPTMATH_USE_NEON
+    size_t i = 0;
+    for (; i + 3 < n; i += 4) {
+        vst1q_f32(out + i, vsubq_f32(vld1q_f32(a + i), vld1q_f32(b + i)));
+    }
+    for (; i < n; ++i) {
+        out[i] = a[i] - b[i];
+    }
+#else
+    for (size_t i = 0; i < n; ++i) out[i] = a[i] - b[i];
+#endif
+}
+
 void neon_mul_f32(float* out, const float* a, const float* b, std::size_t n) {
 #ifdef OPTMATH_USE_NEON
     size_t i = 0;
@@ -129,6 +143,89 @@ void neon_mul_f32(float* out, const float* a, const float* b, std::size_t n) {
     }
 #else
     for (size_t i = 0; i < n; ++i) out[i] = a[i] * b[i];
+#endif
+}
+
+void neon_div_f32(float* out, const float* a, const float* b, std::size_t n) {
+#ifdef OPTMATH_USE_NEON
+    size_t i = 0;
+    for (; i + 3 < n; i += 4) {
+        vst1q_f32(out + i, vdivq_f32(vld1q_f32(a + i), vld1q_f32(b + i)));
+    }
+    for (; i < n; ++i) {
+        out[i] = a[i] / b[i];
+    }
+#else
+    for (size_t i = 0; i < n; ++i) out[i] = a[i] / b[i];
+#endif
+}
+
+float neon_norm_f32(const float* a, std::size_t n) {
+    // Norm = sqrt(dot(a, a))
+    float dot = neon_dot_f32(a, a, n);
+    return std::sqrt(dot);
+}
+
+float neon_reduce_sum_f32(const float* a, std::size_t n) {
+    // Sum is dot with 1.0, but faster to just accumulate
+#ifdef OPTMATH_USE_NEON
+    float32x4_t vsum = vdupq_n_f32(0.0f);
+    size_t i = 0;
+    for (; i + 15 < n; i += 16) {
+        vsum = vaddq_f32(vsum, vld1q_f32(a + i));
+        vsum = vaddq_f32(vsum, vld1q_f32(a + i + 4));
+        vsum = vaddq_f32(vsum, vld1q_f32(a + i + 8));
+        vsum = vaddq_f32(vsum, vld1q_f32(a + i + 12));
+    }
+    for (; i + 3 < n; i += 4) {
+        vsum = vaddq_f32(vsum, vld1q_f32(a + i));
+    }
+    float sum = vaddvq_f32(vsum);
+    for (; i < n; ++i) sum += a[i];
+    return sum;
+#else
+    float sum = 0.0f;
+    for (size_t i=0; i<n; ++i) sum += a[i];
+    return sum;
+#endif
+}
+
+float neon_reduce_max_f32(const float* a, std::size_t n) {
+    if (n == 0) return 0.0f;
+#ifdef OPTMATH_USE_NEON
+    float32x4_t vmax = vdupq_n_f32(-3.402823466e+38f); // Init with small num
+    size_t i = 0;
+    // Load first element to avoid dummy small num if preferred, but vdup is easier
+    // Just handling remaining scalars carefully.
+
+    for (; i + 3 < n; i += 4) {
+        vmax = vmaxq_f32(vmax, vld1q_f32(a + i));
+    }
+    float max_val = vmaxvq_f32(vmax);
+    for (; i < n; ++i) if(a[i] > max_val) max_val = a[i];
+    return max_val;
+#else
+    float m = a[0];
+    for(size_t i=1; i<n; ++i) if(a[i] > m) m = a[i];
+    return m;
+#endif
+}
+
+float neon_reduce_min_f32(const float* a, std::size_t n) {
+    if (n == 0) return 0.0f;
+#ifdef OPTMATH_USE_NEON
+    float32x4_t vmin = vdupq_n_f32(3.402823466e+38f);
+    size_t i = 0;
+    for (; i + 3 < n; i += 4) {
+        vmin = vminq_f32(vmin, vld1q_f32(a + i));
+    }
+    float min_val = vminvq_f32(vmin);
+    for (; i < n; ++i) if(a[i] < min_val) min_val = a[i];
+    return min_val;
+#else
+    float m = a[0];
+    for(size_t i=1; i<n; ++i) if(a[i] < m) m = a[i];
+    return m;
 #endif
 }
 
@@ -257,11 +354,41 @@ Eigen::VectorXf neon_add(const Eigen::VectorXf& a, const Eigen::VectorXf& b) {
     return res;
 }
 
+Eigen::VectorXf neon_sub(const Eigen::VectorXf& a, const Eigen::VectorXf& b) {
+    if(a.size() != b.size()) return Eigen::VectorXf();
+    Eigen::VectorXf res(a.size());
+    neon_sub_f32(res.data(), a.data(), b.data(), a.size());
+    return res;
+}
+
 Eigen::VectorXf neon_mul(const Eigen::VectorXf& a, const Eigen::VectorXf& b) {
     if(a.size() != b.size()) return Eigen::VectorXf();
     Eigen::VectorXf res(a.size());
     neon_mul_f32(res.data(), a.data(), b.data(), a.size());
     return res;
+}
+
+Eigen::VectorXf neon_div(const Eigen::VectorXf& a, const Eigen::VectorXf& b) {
+    if(a.size() != b.size()) return Eigen::VectorXf();
+    Eigen::VectorXf res(a.size());
+    neon_div_f32(res.data(), a.data(), b.data(), a.size());
+    return res;
+}
+
+float neon_norm(const Eigen::VectorXf& a) {
+    return neon_norm_f32(a.data(), a.size());
+}
+
+float neon_reduce_sum(const Eigen::VectorXf& a) {
+    return neon_reduce_sum_f32(a.data(), a.size());
+}
+
+float neon_reduce_max(const Eigen::VectorXf& a) {
+    return neon_reduce_max_f32(a.data(), a.size());
+}
+
+float neon_reduce_min(const Eigen::VectorXf& a) {
+    return neon_reduce_min_f32(a.data(), a.size());
 }
 
 Eigen::VectorXf neon_fir(const Eigen::VectorXf& x, const Eigen::VectorXf& h) {
@@ -321,6 +448,171 @@ Eigen::MatrixXf neon_gemm(const Eigen::MatrixXf& A, const Eigen::MatrixXf& B) {
         }
     }
     return C;
+}
+
+Eigen::MatrixXf neon_mat_scale(const Eigen::MatrixXf& A, float s) {
+    Eigen::MatrixXf C(A.rows(), A.cols());
+#ifdef OPTMATH_USE_NEON
+    float32x4_t vs = vdupq_n_f32(s);
+    size_t n = A.size();
+    const float* in = A.data();
+    float* out = C.data();
+    size_t i = 0;
+    for (; i + 3 < n; i += 4) {
+        vst1q_f32(out + i, vmulq_f32(vld1q_f32(in + i), vs));
+    }
+    for (; i < n; ++i) {
+        out[i] = in[i] * s;
+    }
+#else
+    C = A * s;
+#endif
+    return C;
+}
+
+Eigen::MatrixXf neon_mat_transpose(const Eigen::MatrixXf& A) {
+    Eigen::MatrixXf C(A.cols(), A.rows());
+#ifdef OPTMATH_USE_NEON
+    // Blocked transpose 4x4 using NEON trn/zip/uzp intrinsics
+    // vtrn1q_f32, vtrn2q_f32, etc.
+    // For simplicity, we just use Eigen's implementation or a naive block transpose?
+    // User requested "best build ... add every neon kernel you can find".
+    // A specific 4x4 transpose kernel is good.
+
+    // We assume C is col-major. C(i, j) = A(j, i).
+    // If we iterate 4x4 blocks.
+
+    for (int j = 0; j < A.cols(); j += 4) {
+        for (int i = 0; i < A.rows(); i += 4) {
+            if (i + 4 <= A.rows() && j + 4 <= A.cols()) {
+                // Transpose 4x4 block from A(i,j) to C(j,i)
+                // Load 4 columns of A
+                float32x4_t c0 = vld1q_f32(&A(i, j));
+                float32x4_t c1 = vld1q_f32(&A(i, j+1));
+                float32x4_t c2 = vld1q_f32(&A(i, j+2));
+                float32x4_t c3 = vld1q_f32(&A(i, j+3));
+
+                // Transpose 4x4 in registers
+                // 0: 00 10 20 30
+                // 1: 01 11 21 31
+                // ...
+
+                // trn1/2 swaps elements
+                float32x4_t t0 = vtrn1q_f32(c0, c1); // 00 01 20 21
+                float32x4_t t1 = vtrn2q_f32(c0, c1); // 10 11 30 31
+                float32x4_t t2 = vtrn1q_f32(c2, c3); // 02 03 22 23
+                float32x4_t t3 = vtrn2q_f32(c2, c3); // 12 13 32 33
+
+                // Swap 64-bit halves
+                // C0' = 00 01 02 03 = Low(t0), Low(t2)
+                // C1' = 10 11 12 13 = Low(t1), Low(t3)
+                // C2' = 20 21 22 23 = High(t0), High(t2)
+                // C3' = 30 31 32 33 = High(t1), High(t3)
+
+                // vcombine? No, need vzip or similar.
+                // Actually reinterpret as 64x2 and trn?
+                // Let's use vcombine mechanism manually or just st4?
+                // Actually, vtrn is efficient enough.
+                // Construct from halves:
+                // vextq?
+
+                // Simpler: Use vst4q_f32 which interleaves!
+                // Wait, vst4q takes {v0, v1, v2, v3} and stores them interleaved.
+                // If we load 4 cols:
+                // Col0: A00 A10 A20 A30
+                // Col1: A01 A11 A21 A31
+                // ...
+                // If we interpret these as 4 vectors and do vst4, we get:
+                // A00 A01 A02 A03, A10 A11 A12 A13...
+                // Which is exactly the row-major order of the block,
+                // i.e., the columns of the transposed block (since C is col-major).
+                // So: Load 4 vectors (cols of A), Store using vst4 (interleave) into C (cols of C).
+
+                // But vst4q stores linearly.
+                // C is col-major. C's memory for the block is contiguous? No.
+                // C(j, i) -> C's col j, row i.
+                // The block in C starts at C(j, i).
+                // Its columns are C(j, i)...C(j+3, i). These are stride separated by LDC.
+                // So vst4 is not directly usable unless C is transposed in memory?
+                // Wait, Transpose of A -> C.
+                // C[j, i] = A[i, j].
+                // We want to write into C.
+                // C stores columns continuously.
+                // Col j of C is C(0, j)...C(M, j).
+                // We want to write A's row i into C's col i.
+                // A's row i is strided.
+
+                // So we have 4 vectors (Cols of A).
+                // We transpose them in registers to get Rows of A.
+                // Then store each Row of A as a Col of C.
+                // Since C is col-major, a Col of C is contiguous.
+                // So we just need to transpose in registers and store each vector to &C(j, i), &C(j, i+1)...
+
+                // Re-doing transpose logic:
+                // t0 = 00 01 20 21
+                // t2 = 02 03 22 23
+                // out0 = 00 01 02 03 = vcombine_f32(vget_low_f32(t0), vget_low_f32(t2))
+
+                float32x4_t out0 = vcombine_f32(vget_low_f32(t0), vget_low_f32(t2));
+                float32x4_t out1 = vcombine_f32(vget_low_f32(t1), vget_low_f32(t3));
+                float32x4_t out2 = vcombine_f32(vget_high_f32(t0), vget_high_f32(t2));
+                float32x4_t out3 = vcombine_f32(vget_high_f32(t1), vget_high_f32(t3));
+
+                vst1q_f32(&C(j, i), out0);
+                vst1q_f32(&C(j, i+1), out1);
+                vst1q_f32(&C(j, i+2), out2);
+                vst1q_f32(&C(j, i+3), out3);
+
+            } else {
+                // Fallback
+                for (int ii = i; ii < std::min(i+4, (int)A.rows()); ++ii) {
+                    for (int jj = j; jj < std::min(j+4, (int)A.cols()); ++jj) {
+                        C(jj, ii) = A(ii, jj);
+                    }
+                }
+            }
+        }
+    }
+#else
+    C = A.transpose();
+#endif
+    return C;
+}
+
+Eigen::VectorXf neon_mat_vec_mul(const Eigen::MatrixXf& A, const Eigen::VectorXf& v) {
+    if (A.cols() != v.size()) return Eigen::VectorXf();
+    Eigen::VectorXf res = Eigen::VectorXf::Zero(A.rows());
+
+#ifdef OPTMATH_USE_NEON
+    // res = A * v
+    // A is col-major. A = [col0 col1 ...]
+    // res = sum(col_i * v_i)
+
+    // We iterate over columns of A (and elements of v)
+    // and accumulate into res.
+
+    for (int j = 0; j < A.cols(); ++j) {
+        float val = v[j];
+        float32x4_t vval = vdupq_n_f32(val);
+
+        int i = 0;
+        float* r_ptr = res.data();
+        const float* a_col = &A(0, j);
+
+        for (; i + 3 < A.rows(); i += 4) {
+            float32x4_t acc = vld1q_f32(r_ptr + i);
+            float32x4_t col = vld1q_f32(a_col + i);
+            acc = vmlaq_f32(acc, col, vval);
+            vst1q_f32(r_ptr + i, acc);
+        }
+        for (; i < A.rows(); ++i) {
+            res[i] += A(i, j) * val;
+        }
+    }
+#else
+    res = A * v;
+#endif
+    return res;
 }
 
 }
