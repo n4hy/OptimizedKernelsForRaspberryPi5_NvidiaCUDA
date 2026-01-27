@@ -773,3 +773,5 @@ MIT License - See LICENSE file for details.
 
 **N4HY - Bob McGwier**
 Dr Robert W McGwier, PhD
+
+All unit tests,  much of the debugging, and all documentation except the earliest pieces are all Claude code.
