@@ -10,13 +10,14 @@ target_link_libraries(demo PRIVATE OptMathKernels::OptMathKernels)
 target_compile_features(demo PRIVATE cxx_std_20)
 
 # CUDA demo (only if CUDA is enabled)
-if(ENABLE_CUDA)
-    add_executable(cuda_demo cuda_demo.cpp)
-    target_link_libraries(cuda_demo PRIVATE
-        OptMathKernels::OptMathKernels
-        CUDA::cudart
-        CUDA::cublas
-        CUDA::cufft
-    )
-    target_compile_features(cuda_demo PRIVATE cxx_std_20)
-endif()
+# TODO: Enable when shorthand radar functions are implemented
+# if(ENABLE_CUDA)
+#     add_executable(cuda_demo cuda_demo.cpp)
+#     target_link_libraries(cuda_demo PRIVATE
+#         OptMathKernels::OptMathKernels
+#         CUDA::cudart
+#         CUDA::cublas
+#         CUDA::cufft
+#     )
+#     target_compile_features(cuda_demo PRIVATE cxx_std_20)
+# endif()

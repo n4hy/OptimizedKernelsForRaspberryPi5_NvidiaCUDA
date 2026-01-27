@@ -148,7 +148,7 @@ TEST_F(CudaKernelTest, VectorExp) {
 
 TEST_F(CudaKernelTest, VectorLog) {
     const int n = 1024;
-    Eigen::VectorXf a = Eigen::VectorXf::Random(n).cwiseAbs() + 0.1f; // Positive values
+    Eigen::VectorXf a = (Eigen::VectorXf::Random(n).array().abs() + 0.1f).matrix(); // Positive values
 
     Eigen::VectorXf result = optmath::cuda::cuda_log(a);
 
@@ -181,7 +181,7 @@ TEST_F(CudaKernelTest, VectorCos) {
 
 TEST_F(CudaKernelTest, VectorSqrt) {
     const int n = 1024;
-    Eigen::VectorXf a = Eigen::VectorXf::Random(n).cwiseAbs() + 0.1f;
+    Eigen::VectorXf a = (Eigen::VectorXf::Random(n).array().abs() + 0.1f).matrix();
 
     Eigen::VectorXf result = optmath::cuda::cuda_sqrt(a);
 

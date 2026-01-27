@@ -606,10 +606,7 @@ inline Eigen::VectorXf cuda_leaky_relu(const Eigen::VectorXf& x, float alpha) {
     return result;
 }
 
-// Complex ops (shorthand)
-inline Eigen::VectorXcf cuda_complex_conj_mul(const Eigen::VectorXcf& a, const Eigen::VectorXcf& b) {
-    return cuda_complex_conj_mul(a, b);  // Already exists
-}
+// Complex ops (shorthand) - cuda_complex_conj_mul already declared above
 inline Eigen::VectorXf cuda_complex_abs(const Eigen::VectorXcf& a) { return cuda_complex_magnitude(a); }
 inline Eigen::VectorXf cuda_complex_arg(const Eigen::VectorXcf& a) { return cuda_complex_phase(a); }
 

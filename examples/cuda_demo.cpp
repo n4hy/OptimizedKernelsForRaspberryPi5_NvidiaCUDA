@@ -22,7 +22,6 @@
 
 // Also include NEON for comparison
 #include "optmath/neon_kernels.hpp"
-#include "optmath/neon_complex.hpp"
 
 using namespace std;
 using namespace Eigen;
@@ -80,16 +79,16 @@ int main(int argc, char* argv[]) {
         auto info = optmath::cuda::get_device_info(i);
 
         cout << "Device " << i << ": " << info.name << "\n";
-        cout << "  Compute Capability: " << info.compute_major << "." << info.compute_minor << "\n";
+        cout << "  Compute Capability: " << info.compute_capability_major << "." << info.compute_capability_minor << "\n";
         cout << "  Total Memory: " << fixed << setprecision(2)
              << info.total_memory / (1024.0 * 1024.0 * 1024.0) << " GB\n";
-        cout << "  Multiprocessors: " << info.multiprocessors << "\n";
+        cout << "  Multiprocessors: " << info.multiprocessor_count << "\n";
         cout << "  Max Threads/Block: " << info.max_threads_per_block << "\n";
         cout << "  Warp Size: " << info.warp_size << "\n";
         cout << "  Features:\n";
-        cout << "    - Tensor Cores: " << (info.has_tensor_cores ? "Yes" : "No") << "\n";
-        cout << "    - TF32 Support: " << (info.has_tf32 ? "Yes" : "No") << "\n";
-        cout << "    - FP16 Support: " << (info.has_fp16 ? "Yes" : "No") << "\n";
+        cout << "    - Tensor Cores: " << (info.tensor_cores ? "Yes" : "No") << "\n";
+        cout << "    - TF32 Support: " << (info.tf32_support ? "Yes" : "No") << "\n";
+        cout << "    - FP16 Support: " << (info.fp16_support ? "Yes" : "No") << "\n";
         cout << "\n";
     }
 

@@ -109,11 +109,12 @@ TEST_F(CudaRadarTest, ApplyWindow) {
     Eigen::VectorXcf signal = Eigen::VectorXcf::Ones(n);
     Eigen::VectorXf window = optmath::cuda::cuda_generate_window(n, optmath::cuda::WindowType::HAMMING);
 
-    Eigen::VectorXcf windowed = optmath::cuda::cuda_apply_window(signal, window);
+    // cuda_apply_window modifies in-place
+    optmath::cuda::cuda_apply_window(signal, window);
 
     for (int i = 0; i < n; ++i) {
-        EXPECT_NEAR(windowed(i).real(), window(i), TOLERANCE);
-        EXPECT_NEAR(windowed(i).imag(), 0.0f, TOLERANCE);
+        EXPECT_NEAR(signal(i).real(), window(i), TOLERANCE);
+        EXPECT_NEAR(signal(i).imag(), 0.0f, TOLERANCE);
     }
 }
 
@@ -423,16 +424,16 @@ TEST_F(CudaRadarTest, NLMSConvergence) {
 TEST_F(CudaRadarTest, DeviceInfo) {
     auto info = optmath::cuda::get_device_info();
 
-    EXPECT_GT(info.name.length(), 0);
-    EXPECT_GT(info.compute_major, 0);
-    EXPECT_GT(info.total_memory, 0);
-    EXPECT_GT(info.multiprocessors, 0);
+    EXPECT_GT(info.name.length(), 0u);
+    EXPECT_GT(info.compute_capability_major, 0);
+    EXPECT_GT(info.total_memory, 0u);
+    EXPECT_GT(info.multiprocessor_count, 0);
 
     std::cout << "CUDA Device: " << info.name << std::endl;
-    std::cout << "  Compute: " << info.compute_major << "." << info.compute_minor << std::endl;
+    std::cout << "  Compute: " << info.compute_capability_major << "." << info.compute_capability_minor << std::endl;
     std::cout << "  Memory: " << info.total_memory / (1024*1024) << " MB" << std::endl;
-    std::cout << "  Multiprocessors: " << info.multiprocessors << std::endl;
-    std::cout << "  Tensor Cores: " << (info.has_tensor_cores ? "Yes" : "No") << std::endl;
+    std::cout << "  Multiprocessors: " << info.multiprocessor_count << std::endl;
+    std::cout << "  Tensor Cores: " << (info.tensor_cores ? "Yes" : "No") << std::endl;
 }
 
 TEST_F(CudaRadarTest, DeviceCount) {
