@@ -28,6 +28,7 @@ While remaining compatible with standard Linux x86/ARM environments.
 - [Troubleshooting](#troubleshooting)
 - [File Structure](#file-structure)
 - [License](#license)
+- [Recent Changes](#recent-changes)
 
 ---
 
@@ -106,6 +107,7 @@ OptMathKernels powers the [PassiveRadar_Kraken](https://github.com/n4hy/PassiveR
 - **Multi-GPU**: Device enumeration, peer-to-peer access, workload distribution
 - **Unified Memory**: Simplified CPU-GPU data management
 - **Radar Processing**: Full GPU-accelerated CAF, CFAR, beamforming, NLMS filter
+- **Optimized CAF**: Zero CPU-GPU transfers inside Doppler loop for maximum throughput
 
 ---
 
@@ -738,6 +740,26 @@ OptMathKernels/
 ## Related Projects
 
 - **[PassiveRadar_Kraken](https://github.com/n4hy/PassiveRadar_Kraken)**: Complete passive bistatic radar system using OptMathKernels for acceleration. Includes GNU Radio blocks, multi-target tracking, and real-time displays.
+
+---
+
+## Recent Changes
+
+### v0.2.1 - Performance and Bug Fixes
+
+**CUDA Backend:**
+- **Optimized `cuda_caf()`**: Eliminated all CPU-GPU memory transfers inside the Doppler processing loop
+  - Added `kernel_interleave_complex_f32` for GPU-side complex array interleaving
+  - Added `kernel_complex_conj_mul_interleaved_f32` for frequency-domain multiplication
+  - Added `kernel_magnitude_interleaved_f32` for magnitude extraction
+  - Result: ~6 fewer `cudaMemcpy` calls per Doppler bin, data stays on GPU until final output
+- **Fixed `cuda_vec_sum_f32()`**: Removed dead code (unused buffer allocation and kernel call)
+
+**NEON Backend:**
+- **Fixed `neon_tanh_f32_fast()`**: Removed dead code line that was immediately overwritten
+
+**Testing:**
+- All 10 test suites pass (NEON, Vulkan, CUDA, Radar)
 
 ---
 
