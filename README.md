@@ -36,7 +36,8 @@ While remaining compatible with standard Linux x86/ARM environments.
 
 ### Passive Radar Signal Processing
 
-OptMathKernels powers the [PassiveRadar_Kraken](https://github.com/n4hy/PassiveRadar_Kraken) project, providing hardware-accelerated kernels for:
+OptMathKernels powers the [PassiveRadar_Kraken](https://github.com/n4hy/PassiveRadar_Kraken_NvidiaCUDA,git)
+project, providing hardware-accelerated kernels for:
 
 **ARM NEON (Raspberry Pi 5):**
 | Operation | Speedup | Application |
@@ -287,7 +288,7 @@ nvidia-smi
 
 #### 1. Clone the Repository
 ```bash
-git clone https://github.com/n4hy/OptimizedKernelsForRaspberryPi5.git
+git clone https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA.git
 cd OptimizedKernelsForRaspberryPi5
 ```
 
