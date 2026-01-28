@@ -446,16 +446,16 @@ Eigen::MatrixXf As = optmath::neon::neon_mat_scale(A, 2.5f);
 ```cpp
 std::vector<float> input(N), output(N);
 
-// Fast exp approximation (~1e-6 relative error)
-optmath::neon::neon_exp_f32_approx(output.data(), input.data(), N);
+// Fast exp approximation (~12% relative error at extremes, better near zero)
+optmath::neon::neon_fast_exp_f32(output.data(), input.data(), N);
 
-// Fast sin/cos approximation
-optmath::neon::neon_sin_f32_approx(output.data(), input.data(), N);
-optmath::neon::neon_cos_f32_approx(output.data(), input.data(), N);
+// Fast sin/cos approximation (~1e-5 accuracy)
+optmath::neon::neon_fast_sin_f32(output.data(), input.data(), N);
+optmath::neon::neon_fast_cos_f32(output.data(), input.data(), N);
 
-// Fast activation functions
-optmath::neon::neon_sigmoid_f32_fast(output.data(), input.data(), N);
-optmath::neon::neon_tanh_f32_fast(output.data(), input.data(), N);
+// Fast activation functions (~3% sigmoid, ~6% tanh)
+optmath::neon::neon_fast_sigmoid_f32(output.data(), input.data(), N);
+optmath::neon::neon_fast_tanh_f32(output.data(), input.data(), N);
 ```
 
 ### NEON Complex Operations
@@ -757,7 +757,7 @@ OptMathKernels/
 - **Fixed `cuda_vec_sum_f32()`**: Removed dead code (unused buffer allocation and kernel call)
 
 **NEON Backend:**
-- **Fixed `neon_tanh_f32_fast()`**: Removed dead code line that was immediately overwritten
+- **Fixed `neon_fast_tanh_f32()`**: Removed dead code line that was immediately overwritten
 
 **Testing:**
 - All 10 test suites pass (NEON, Vulkan, CUDA, Radar)

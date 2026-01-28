@@ -351,7 +351,7 @@ static inline float32x4_t clamp_f32(float32x4_t x, float32x4_t min_val, float32x
 }
 #endif
 
-void neon_exp_f32_approx(float* out, const float* in, std::size_t n) {
+void neon_fast_exp_f32(float* out, const float* in, std::size_t n) {
     // Approximation: exp(x) using range reduction and polynomial
     // exp(x) = 2^(x * log2(e)) = 2^k * 2^f where k = floor(x*log2e), f = frac
     // For f in [-0.5, 0.5], use minimax polynomial
@@ -448,7 +448,7 @@ void neon_exp_f32_approx(float* out, const float* in, std::size_t n) {
 #endif
 }
 
-void neon_sin_f32_approx(float* out, const float* in, std::size_t n) {
+void neon_fast_sin_f32(float* out, const float* in, std::size_t n) {
     // Sine approximation using Chebyshev polynomial
     // Range reduction to [-pi, pi], then polynomial
 
@@ -521,7 +521,7 @@ void neon_sin_f32_approx(float* out, const float* in, std::size_t n) {
 #endif
 }
 
-void neon_cos_f32_approx(float* out, const float* in, std::size_t n) {
+void neon_fast_cos_f32(float* out, const float* in, std::size_t n) {
     // cos(x) = sin(x + pi/2)
     const float half_pi = 1.57079632679489661923f;
 
@@ -538,7 +538,7 @@ void neon_cos_f32_approx(float* out, const float* in, std::size_t n) {
     for (; i < n; ++i) {
         temp[i] = in[i] + half_pi;
     }
-    neon_sin_f32_approx(out, temp.data(), n);
+    neon_fast_sin_f32(out, temp.data(), n);
 #else
     for (size_t i = 0; i < n; ++i) {
         out[i] = std::cos(in[i]);
@@ -546,7 +546,7 @@ void neon_cos_f32_approx(float* out, const float* in, std::size_t n) {
 #endif
 }
 
-void neon_sigmoid_f32_fast(float* out, const float* in, std::size_t n) {
+void neon_fast_sigmoid_f32(float* out, const float* in, std::size_t n) {
     // Fast sigmoid: 1 / (1 + exp(-x))
     // Uses vectorized exp approximation
     // Clamp inputs to prevent overflow: for |x| > 20, sigmoid saturates to 0 or 1
@@ -577,7 +577,7 @@ void neon_sigmoid_f32_fast(float* out, const float* in, std::size_t n) {
 
     // Compute exp(-x)
     std::vector<float> exp_neg_x(n);
-    neon_exp_f32_approx(exp_neg_x.data(), neg_x.data(), n);
+    neon_fast_exp_f32(exp_neg_x.data(), neg_x.data(), n);
 
     // Compute 1 / (1 + exp(-x))
     // Note: denominator is always >= 1.0 since exp(-x) >= 0, so no division by zero possible
@@ -602,7 +602,7 @@ void neon_sigmoid_f32_fast(float* out, const float* in, std::size_t n) {
 #endif
 }
 
-void neon_tanh_f32_fast(float* out, const float* in, std::size_t n) {
+void neon_fast_tanh_f32(float* out, const float* in, std::size_t n) {
     // tanh(x) = (exp(2x) - 1) / (exp(2x) + 1)
     // Or equivalently: 2 * sigmoid(2x) - 1
 
@@ -623,7 +623,7 @@ void neon_tanh_f32_fast(float* out, const float* in, std::size_t n) {
 
     // Compute sigmoid(2x)
     std::vector<float> sig(n);
-    neon_sigmoid_f32_fast(sig.data(), two_x.data(), n);
+    neon_fast_sigmoid_f32(sig.data(), two_x.data(), n);
 
     // Compute 2*sigmoid(2x) - 1
     i = 0;

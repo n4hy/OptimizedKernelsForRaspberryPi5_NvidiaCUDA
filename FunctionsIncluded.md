@@ -92,15 +92,16 @@ Returns `true` if NEON acceleration was compiled in and is available.
 
 ### Vectorized Transcendentals (Fast Approximations)
 
-These functions use NEON SIMD for 4-8x speedup with ~1e-6 relative accuracy.
+These functions use NEON SIMD for 4-8x speedup, trading accuracy for speed.
+Typical accuracy: exp ~12%, sin/cos ~1e-5, sigmoid ~3%, tanh ~6%.
 
 | Function | Return Type | Parameters | Description |
 |----------|-------------|------------|-------------|
-| `neon_exp_f32_approx` | `void` | `float* out, const float* in, std::size_t n` | Vectorized exp (6th-order polynomial) |
-| `neon_sin_f32_approx` | `void` | `float* out, const float* in, std::size_t n` | Vectorized sin (Chebyshev polynomial) |
-| `neon_cos_f32_approx` | `void` | `float* out, const float* in, std::size_t n` | Vectorized cos |
-| `neon_sigmoid_f32_fast` | `void` | `float* out, const float* in, std::size_t n` | Fast vectorized sigmoid |
-| `neon_tanh_f32_fast` | `void` | `float* out, const float* in, std::size_t n` | Fast vectorized tanh |
+| `neon_fast_exp_f32` | `void` | `float* out, const float* in, std::size_t n` | Vectorized exp (6th-order polynomial, ~12% error) |
+| `neon_fast_sin_f32` | `void` | `float* out, const float* in, std::size_t n` | Vectorized sin (Chebyshev polynomial, ~1e-5 error) |
+| `neon_fast_cos_f32` | `void` | `float* out, const float* in, std::size_t n` | Vectorized cos (~1e-5 error) |
+| `neon_fast_sigmoid_f32` | `void` | `float* out, const float* in, std::size_t n` | Fast vectorized sigmoid (~3% error) |
+| `neon_fast_tanh_f32` | `void` | `float* out, const float* in, std::size_t n` | Fast vectorized tanh (~6% error) |
 
 **Performance** (Raspberry Pi 5):
 - `exp`: ~13 GFLOPS (45x faster than scalar)

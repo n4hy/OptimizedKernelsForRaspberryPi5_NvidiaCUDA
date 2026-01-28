@@ -328,27 +328,15 @@ void neon_gemm_blocked_f32(
 }
 
 // Eigen wrapper for optimized blocked GEMM
+// Note: The 8x8 microkernel has subtle bugs causing large errors.
+// For now, delegate to the working 4x4-tiled neon_gemm() implementation.
 Eigen::MatrixXf neon_gemm_blocked(const Eigen::MatrixXf& A, const Eigen::MatrixXf& B) {
     if (A.cols() != B.rows()) {
         return Eigen::MatrixXf();
     }
 
-    size_t M = A.rows();
-    size_t K = A.cols();
-    size_t N = B.cols();
-
-    Eigen::MatrixXf C(M, N);
-
-    neon_gemm_blocked_f32(
-        C.data(),
-        A.data(),
-        B.data(),
-        M, N, K,
-        A.outerStride(),
-        B.outerStride(),
-        C.outerStride());
-
-    return C;
+    // Delegate to the working neon_gemm() implementation
+    return neon_gemm(A, B);
 }
 
 } // namespace neon

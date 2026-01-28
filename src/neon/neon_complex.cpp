@@ -189,7 +189,8 @@ void neon_complex_dot_f32(float* out_re, float* out_im,
                           const float* a_re, const float* a_im,
                           const float* b_re, const float* b_im,
                           std::size_t n) {
-    // Complex dot product: sum(a * conj(b))
+    // Complex dot product: sum(conj(a) * b) - standard mathematical inner product
+    // This matches Eigen's VectorXcf::dot() behavior
 #ifdef OPTMATH_USE_NEON
     float32x4_t sum_re = vdupq_n_f32(0.0f);
     float32x4_t sum_im = vdupq_n_f32(0.0f);
@@ -201,11 +202,12 @@ void neon_complex_dot_f32(float* out_re, float* out_im,
         float32x4_t br = vld1q_f32(b_re + i);
         float32x4_t bi = vld1q_f32(b_im + i);
 
-        // a * conj(b) = (ar*br + ai*bi) + j*(ai*br - ar*bi)
+        // conj(a) * b = (ar - j*ai) * (br + j*bi)
+        //             = (ar*br + ai*bi) + j*(ar*bi - ai*br)
         sum_re = vmlaq_f32(sum_re, ar, br);
         sum_re = vmlaq_f32(sum_re, ai, bi);
-        sum_im = vmlaq_f32(sum_im, ai, br);
-        sum_im = vmlsq_f32(sum_im, ar, bi);
+        sum_im = vmlaq_f32(sum_im, ar, bi);
+        sum_im = vmlsq_f32(sum_im, ai, br);
     }
 
     float re = vaddvq_f32(sum_re);
@@ -213,7 +215,7 @@ void neon_complex_dot_f32(float* out_re, float* out_im,
 
     for (; i < n; ++i) {
         re += a_re[i] * b_re[i] + a_im[i] * b_im[i];
-        im += a_im[i] * b_re[i] - a_re[i] * b_im[i];
+        im += a_re[i] * b_im[i] - a_im[i] * b_re[i];
     }
 
     *out_re = re;
@@ -222,7 +224,7 @@ void neon_complex_dot_f32(float* out_re, float* out_im,
     float re = 0.0f, im = 0.0f;
     for (std::size_t i = 0; i < n; ++i) {
         re += a_re[i] * b_re[i] + a_im[i] * b_im[i];
-        im += a_im[i] * b_re[i] - a_re[i] * b_im[i];
+        im += a_re[i] * b_im[i] - a_im[i] * b_re[i];
     }
     *out_re = re;
     *out_im = im;

@@ -20,7 +20,7 @@ static void BM_NEON_Exp_Approx(benchmark::State& state) {
     }
 
     for (auto _ : state) {
-        neon_exp_f32_approx(output.data(), input.data(), N);
+        neon_fast_exp_f32(output.data(), input.data(), N);
         benchmark::DoNotOptimize(output.data());
     }
 
@@ -64,7 +64,7 @@ static void BM_NEON_Sin_Approx(benchmark::State& state) {
     }
 
     for (auto _ : state) {
-        neon_sin_f32_approx(output.data(), input.data(), N);
+        neon_fast_sin_f32(output.data(), input.data(), N);
         benchmark::DoNotOptimize(output.data());
     }
 
@@ -109,7 +109,7 @@ static void BM_NEON_Cos_Approx(benchmark::State& state) {
     }
 
     for (auto _ : state) {
-        neon_cos_f32_approx(output.data(), input.data(), N);
+        neon_fast_cos_f32(output.data(), input.data(), N);
         benchmark::DoNotOptimize(output.data());
     }
 
@@ -132,7 +132,7 @@ static void BM_NEON_Sigmoid_Fast(benchmark::State& state) {
     }
 
     for (auto _ : state) {
-        neon_sigmoid_f32_fast(output.data(), input.data(), N);
+        neon_fast_sigmoid_f32(output.data(), input.data(), N);
         benchmark::DoNotOptimize(output.data());
     }
 
@@ -175,7 +175,7 @@ static void BM_NEON_Tanh_Fast(benchmark::State& state) {
     }
 
     for (auto _ : state) {
-        neon_tanh_f32_fast(output.data(), input.data(), N);
+        neon_fast_tanh_f32(output.data(), input.data(), N);
         benchmark::DoNotOptimize(output.data());
     }
 

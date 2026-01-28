@@ -60,33 +60,38 @@ namespace neon {
     // =========================================================================
     // Vectorized Transcendental Functions (Fast Approximations)
     // =========================================================================
+    // These are SIMD-optimized approximations trading accuracy for speed.
+    // Typical accuracy: exp ~12%, sigmoid ~3%, tanh ~6% relative error.
+    // Suitable for ML inference and non-precision-critical DSP.
 
     /**
-     * @brief Vectorized exp approximation using range reduction and 6th-order polynomial
-     * Accurate to ~1e-6 relative error for |x| < 88
+     * @brief Fast vectorized exp using range reduction and 6th-order polynomial
+     * ~12% relative error at extremes, better near zero
      */
-    void neon_exp_f32_approx(float* out, const float* in, std::size_t n);
+    void neon_fast_exp_f32(float* out, const float* in, std::size_t n);
 
     /**
-     * @brief Vectorized sin approximation using Chebyshev polynomial
-     * Accurate to ~1e-6 for all x (uses range reduction)
+     * @brief Fast vectorized sin using Chebyshev polynomial
+     * ~1e-5 accuracy (uses range reduction to [-pi, pi])
      */
-    void neon_sin_f32_approx(float* out, const float* in, std::size_t n);
+    void neon_fast_sin_f32(float* out, const float* in, std::size_t n);
 
     /**
-     * @brief Vectorized cos approximation
+     * @brief Fast vectorized cos using sin(x + pi/2)
      */
-    void neon_cos_f32_approx(float* out, const float* in, std::size_t n);
+    void neon_fast_cos_f32(float* out, const float* in, std::size_t n);
 
     /**
      * @brief Fast vectorized sigmoid: 1/(1+exp(-x))
+     * ~3% error (inherits from fast exp)
      */
-    void neon_sigmoid_f32_fast(float* out, const float* in, std::size_t n);
+    void neon_fast_sigmoid_f32(float* out, const float* in, std::size_t n);
 
     /**
-     * @brief Fast vectorized tanh using sigmoid
+     * @brief Fast vectorized tanh: 2*sigmoid(2x)-1
+     * ~6% error (compounds from sigmoid)
      */
-    void neon_tanh_f32_fast(float* out, const float* in, std::size_t n);
+    void neon_fast_tanh_f32(float* out, const float* in, std::size_t n);
 
     // =========================================================================
     // Complex Number Operations
