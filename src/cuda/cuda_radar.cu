@@ -11,6 +11,13 @@
  * - NLMS Adaptive Filtering
  */
 
+// Suppress NVCC warning about Eigen host functions being called from host/device context
+// This is a known Eigen + CUDA compatibility issue with template instantiation
+// Must be placed before including Eigen headers
+#ifdef __CUDACC__
+#pragma nv_diag_suppress 20014
+#endif
+
 #include "optmath/cuda_backend.hpp"
 #include "optmath/cuda_error.hpp"
 #include <cmath>

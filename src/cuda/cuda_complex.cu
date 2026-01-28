@@ -11,6 +11,16 @@
 #include "optmath/cuda_error.hpp"
 #include <cmath>
 
+// Helper function to compute phase (arg) of complex vector without Eigen's .arg()
+// which has NVCC compatibility issues with std::arg ADL lookup
+static inline Eigen::VectorXf compute_phase_fallback(const Eigen::VectorXcf& a) {
+    Eigen::VectorXf result(a.size());
+    for (Eigen::Index i = 0; i < a.size(); ++i) {
+        result[i] = std::atan2(a[i].imag(), a[i].real());
+    }
+    return result;
+}
+
 #ifdef OPTMATH_USE_CUDA
 #include <cuda_runtime.h>
 #include <cufft.h>
@@ -188,9 +198,10 @@ __global__ void kernel_complex_dot_reduce_f32(float* __restrict__ out_re,
         float ai = a_im[idx];
         float br = b_re[idx];
         float bi = b_im[idx];
-        // conj(b) for dot product: a * conj(b)
+        // Eigen's dot product convention: conj(a) * b
+        // (ar - ai*i) * (br + bi*i) = ar*br + ai*bi + (ar*bi - ai*br)*i
         sum_re += ar * br + ai * bi;
-        sum_im += ai * br - ar * bi;
+        sum_im += ar * bi - ai * br;
 
         if (idx + blockDim.x < n) {
             ar = a_re[idx + blockDim.x];
@@ -198,7 +209,7 @@ __global__ void kernel_complex_dot_reduce_f32(float* __restrict__ out_re,
             br = b_re[idx + blockDim.x];
             bi = b_im[idx + blockDim.x];
             sum_re += ar * br + ai * bi;
-            sum_im += ai * br - ar * bi;
+            sum_im += ar * bi - ai * br;
         }
         idx += blockDim.x * gridDim.x * 2;
     }
@@ -851,19 +862,19 @@ Eigen::VectorXf cuda_complex_phase(const Eigen::VectorXcf& a) {
     if (err != cudaSuccess) {
         std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
         cleanup();
-        return a.array().arg();
+        return compute_phase_fallback(a);
     }
     err = cudaMalloc(&d_im, n * sizeof(float));
     if (err != cudaSuccess) {
         std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
         cleanup();
-        return a.array().arg();
+        return compute_phase_fallback(a);
     }
     err = cudaMalloc(&d_out, n * sizeof(float));
     if (err != cudaSuccess) {
         std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
         cleanup();
-        return a.array().arg();
+        return compute_phase_fallback(a);
     }
 
     std::vector<float> re(n), im(n);
@@ -876,13 +887,13 @@ Eigen::VectorXf cuda_complex_phase(const Eigen::VectorXcf& a) {
     if (err != cudaSuccess) {
         std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
         cleanup();
-        return a.array().arg();
+        return compute_phase_fallback(a);
     }
     err = cudaMemcpy(d_im, im.data(), n * sizeof(float), cudaMemcpyHostToDevice);
     if (err != cudaSuccess) {
         std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
         cleanup();
-        return a.array().arg();
+        return compute_phase_fallback(a);
     }
 
     cuda_complex_phase_f32(d_out, d_re, d_im, n);
@@ -891,12 +902,12 @@ Eigen::VectorXf cuda_complex_phase(const Eigen::VectorXcf& a) {
     if (err != cudaSuccess) {
         std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl;
         cleanup();
-        return a.array().arg();
+        return compute_phase_fallback(a);
     }
 
     cleanup();
 #else
-    result = a.array().arg();
+    result = compute_phase_fallback(a);
 #endif
 
     return result;

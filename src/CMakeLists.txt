@@ -19,6 +19,10 @@ if(ENABLE_CUDA)
 
     # Set CUDA-specific properties
     set_source_files_properties(${CUDA_SOURCES} PROPERTIES LANGUAGE CUDA)
+
+    # Suppress NVCC warning 20014 about Eigen host functions in host/device context
+    # This is a known Eigen + CUDA template instantiation compatibility issue
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -diag-suppress=20014")
 endif()
 
 if(ENABLE_VULKAN)

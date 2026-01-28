@@ -28,7 +28,7 @@ using namespace optmath::cuda;
 // =============================================================================
 
 constexpr int BLOCK_SIZE = 256;
-constexpr int WARP_SIZE = 32;
+[[maybe_unused]] constexpr int WARP_SIZE = 32;
 
 inline int div_ceil(int a, int b) {
     return (a + b - 1) / b;
@@ -309,11 +309,13 @@ __global__ void kernel_mat_scale_f32(float* __restrict__ out,
 __global__ void kernel_mat_transpose_naive_f32(float* __restrict__ out,
                                                 const float* __restrict__ A,
                                                 int M, int N) {
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    // Column-major transpose: A(M,N) -> out(N,M)
+    // A(i,j) at index i + j*M goes to out(j,i) at index j + i*N
+    int i = blockIdx.y * blockDim.y + threadIdx.y;  // row in A
+    int j = blockIdx.x * blockDim.x + threadIdx.x;  // col in A
 
-    if (row < M && col < N) {
-        out[col * M + row] = A[row * N + col];
+    if (i < M && j < N) {
+        out[j + i * N] = A[i + j * M];
     }
 }
 
@@ -324,27 +326,34 @@ __global__ void kernel_mat_transpose_naive_f32(float* __restrict__ out,
 __global__ void kernel_mat_transpose_tiled_f32(float* __restrict__ out,
                                                 const float* __restrict__ A,
                                                 int M, int N) {
+    // Column-major tiled transpose: A(M,N) -> out(N,M)
+    // A(i,j) at index i + j*M goes to out(j,i) at index j + i*N
     __shared__ float tile[TILE_DIM][TILE_DIM + 1];  // +1 to avoid bank conflicts
 
-    int x = blockIdx.x * TILE_DIM + threadIdx.x;
-    int y = blockIdx.y * TILE_DIM + threadIdx.y;
+    // Block (bx, by) handles a tile of A starting at row by*TILE_DIM, col bx*TILE_DIM
+    int col_A = blockIdx.x * TILE_DIM + threadIdx.x;  // column index in A
+    int row_A = blockIdx.y * TILE_DIM + threadIdx.y;  // row index in A
 
-    // Load tile
+    // Load tile from column-major A
     for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS) {
-        if (x < N && (y + j) < M) {
-            tile[threadIdx.y + j][threadIdx.x] = A[(y + j) * N + x];
+        if (col_A < N && (row_A + j) < M) {
+            // A(row_A+j, col_A) in column-major: index = (row_A+j) + col_A*M
+            tile[threadIdx.y + j][threadIdx.x] = A[(row_A + j) + col_A * M];
         }
     }
 
     __syncthreads();
 
-    // Write transposed tile
-    x = blockIdx.y * TILE_DIM + threadIdx.x;
-    y = blockIdx.x * TILE_DIM + threadIdx.y;
+    // Write transposed tile to out
+    // out(j,i) where i was row in A, j was col in A
+    // Tile at (by, bx) in A becomes tile at (bx, by) in out
+    int col_out = blockIdx.y * TILE_DIM + threadIdx.x;  // column index in out (was row in A)
+    int row_out = blockIdx.x * TILE_DIM + threadIdx.y;  // row index in out (was col in A)
 
     for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS) {
-        if (x < M && (y + j) < N) {
-            out[(y + j) * M + x] = tile[threadIdx.x][threadIdx.y + j];
+        if (col_out < M && (row_out + j) < N) {
+            // out(row_out+j, col_out) in column-major: index = (row_out+j) + col_out*N
+            out[(row_out + j) + col_out * N] = tile[threadIdx.x][threadIdx.y + j];
         }
     }
 }
@@ -1060,20 +1069,25 @@ void cuda_mat_mul_f32(float* C, const float* A, const float* B,
     float alpha = 1.0f;
     float beta = 0.0f;
 
-    // cuBLAS uses column-major, so we compute B^T * A^T = (A * B)^T
-    // to get row-major result
+    // Eigen uses column-major storage, same as cuBLAS
+    // C(M,N) = A(M,K) * B(K,N)
+    // Direct cuBLAS call with proper leading dimensions
     cublasOperation_t opA = transA ? CUBLAS_OP_T : CUBLAS_OP_N;
     cublasOperation_t opB = transB ? CUBLAS_OP_T : CUBLAS_OP_N;
 
-    // Note: cuBLAS is column-major, so we swap A and B and transpose logic
+    // For column-major: lda = #rows of A, ldb = #rows of B, ldc = #rows of C
+    int lda = transA ? K : M;
+    int ldb = transB ? N : K;
+    int ldc = M;
+
     cublasSgemm(ctx.cublas(),
-                opB, opA,
-                N, M, K,
+                opA, opB,
+                M, N, K,
                 &alpha,
-                B, transB ? K : N,
-                A, transA ? M : K,
+                A, lda,
+                B, ldb,
                 &beta,
-                C, N);
+                C, ldc);
 #endif
 }
 
@@ -1116,12 +1130,14 @@ void cuda_mat_vec_mul_f32(float* out, const float* A, const float* x, int M, int
     float alpha = 1.0f;
     float beta = 0.0f;
 
+    // Eigen uses column-major, same as cuBLAS
+    // y(M) = A(M,N) * x(N)
     // cuBLAS GEMV: y = alpha * A * x + beta * y
     cublasSgemv(ctx.cublas(),
-                CUBLAS_OP_T,  // Row-major to col-major conversion
-                N, M,
+                CUBLAS_OP_N,  // No transpose - column-major A
+                M, N,
                 &alpha,
-                A, N,
+                A, M,  // lda = M for column-major
                 x, 1,
                 &beta,
                 out, 1);
