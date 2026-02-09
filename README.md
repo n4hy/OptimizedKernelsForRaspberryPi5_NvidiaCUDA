@@ -383,7 +383,7 @@ For complete API documentation of all **417+ functions**, see:
 
 | Backend | Functions | Description |
 |---------|-----------|-------------|
-| **NEON** | 124 | ARM SIMD operations for Raspberry Pi 5 |
+| **NEON** | 104 | ARM SIMD operations for Raspberry Pi 5 |
 | **CUDA** | 242 | NVIDIA GPU kernels (cuBLAS, cuFFT, cuSOLVER) |
 | **Vulkan** | 23 | Cross-platform GPU compute shaders |
 | **Radar** | 48 | Passive radar signal processing |
@@ -879,7 +879,7 @@ OptMathKernels/
 │   └── cuda_demo.cpp               # CUDA demo
 ├── cmake/
 │   └── OptMathKernelsConfig.cmake.in  # CMake package config
-├── FunctionsIncluded.md            # Complete API reference (396+ functions)
+├── FunctionsIncluded.md            # Complete API reference (417+ functions)
 └── README.md                       # This file
 ```
 

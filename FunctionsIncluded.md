@@ -3,7 +3,7 @@
 Complete API documentation for OptMathKernels - High-Performance Numerical Library for Raspberry Pi 5 and NVIDIA GPUs.
 
 **Version**: 1.0.0
-**Total Functions**: 437+
+**Total Functions**: 417+
 **Backends**: NEON (ARM), CUDA (NVIDIA), Vulkan (Cross-platform)
 
 ---
