@@ -3,7 +3,7 @@
 Complete API documentation for OptMathKernels - High-Performance Numerical Library for Raspberry Pi 5 and NVIDIA GPUs.
 
 **Version**: 1.0.0
-**Total Functions**: 416+
+**Total Functions**: 437+
 **Backends**: NEON (ARM), CUDA (NVIDIA), Vulkan (Cross-platform)
 
 ---
@@ -260,6 +260,55 @@ High-level C++ interface using Eigen types.
 | `neon_resample` | `Eigen::VectorXf` | `const Eigen::VectorXf& in, const Eigen::VectorXf& filter, std::size_t L, std::size_t M` | Polyphase resampler (one-shot) |
 | `neon_biquad` | `Eigen::VectorXf` | `const Eigen::VectorXf& in, const BiquadCoeffs& coeffs` | Biquad IIR filter (single section) |
 | `neon_conv2d` | `Eigen::MatrixXf` | `const Eigen::MatrixXf& in, const Eigen::MatrixXf& kernel` | 2D convolution (handles col/row-major conversion) |
+
+---
+
+### Dense Linear Algebra (Low-Level)
+
+Column-major layout. All operations are in-place unless noted. NEON-vectorized AXPY/dot/scale for contiguous column data.
+
+#### Triangular Solve
+
+| Function | Return Type | Parameters | Description |
+|----------|-------------|------------|-------------|
+| `neon_trsv_lower_f32` | `void` | `float* b, const float* L, std::size_t n, std::size_t ldl` | Forward substitution: solve L*x = b |
+| `neon_trsv_upper_f32` | `void` | `float* b, const float* U, std::size_t n, std::size_t ldu` | Backward substitution: solve U*x = b |
+| `neon_trsv_lower_unit_f32` | `void` | `float* b, const float* L, std::size_t n, std::size_t ldl` | Unit-diagonal forward substitution |
+| `neon_trsv_lower_trans_f32` | `void` | `float* b, const float* L, std::size_t n, std::size_t ldl` | Solve L^T*x = b using lower L |
+| `neon_trsm_lower_f32` | `void` | `float* B, const float* L, std::size_t n, std::size_t nrhs, std::size_t ldl, std::size_t ldb` | Multi-RHS lower triangular solve |
+| `neon_trsm_upper_f32` | `void` | `float* B, const float* U, std::size_t n, std::size_t nrhs, std::size_t ldu, std::size_t ldb` | Multi-RHS upper triangular solve |
+
+#### Decompositions
+
+| Function | Return Type | Parameters | Description |
+|----------|-------------|------------|-------------|
+| `neon_cholesky_f32` | `int` | `float* A, std::size_t n, std::size_t lda` | Cholesky A = L*L^T (returns 0 or failing pivot) |
+| `neon_lu_f32` | `int` | `float* A, int* piv, std::size_t m, std::size_t n, std::size_t lda` | LU with partial pivoting (returns 0 or failing pivot) |
+| `neon_qr_f32` | `void` | `float* A, float* tau, std::size_t m, std::size_t n, std::size_t lda` | QR via Householder reflections |
+| `neon_qr_extract_q_f32` | `void` | `float* Q, const float* A, const float* tau, std::size_t m, std::size_t n, std::size_t lda, std::size_t ldq` | Extract explicit Q from Householder vectors |
+
+#### Solvers
+
+| Function | Return Type | Parameters | Description |
+|----------|-------------|------------|-------------|
+| `neon_solve_f32` | `int` | `float* A, float* b, std::size_t n, std::size_t lda` | General solve via LU |
+| `neon_solve_spd_f32` | `int` | `float* A, float* b, std::size_t n, std::size_t lda` | SPD solve via Cholesky |
+| `neon_inverse_f32` | `int` | `float* Ainv, const float* A, std::size_t n, std::size_t lda, std::size_t ldinv` | Matrix inverse via LU |
+
+---
+
+### Eigen Dense Linear Algebra Wrappers
+
+| Function | Return Type | Parameters | Description |
+|----------|-------------|------------|-------------|
+| `neon_cholesky` | `Eigen::MatrixXf` | `const Eigen::MatrixXf& A` | Cholesky: returns L (empty on failure) |
+| `neon_lu` | `pair<MatrixXf, VectorXi>` | `const Eigen::MatrixXf& A` | LU: returns (LU combined, pivot vector) |
+| `neon_qr` | `pair<MatrixXf, MatrixXf>` | `const Eigen::MatrixXf& A` | QR: returns (Q, R) |
+| `neon_trsv_lower` | `Eigen::VectorXf` | `const Eigen::MatrixXf& L, const Eigen::VectorXf& b` | Solve L*x = b |
+| `neon_trsv_upper` | `Eigen::VectorXf` | `const Eigen::MatrixXf& U, const Eigen::VectorXf& b` | Solve U*x = b |
+| `neon_solve` | `Eigen::VectorXf` | `const Eigen::MatrixXf& A, const Eigen::VectorXf& b` | General solve A*x = b |
+| `neon_solve_spd` | `Eigen::VectorXf` | `const Eigen::MatrixXf& A, const Eigen::VectorXf& b` | SPD solve A*x = b |
+| `neon_inverse` | `Eigen::MatrixXf` | `const Eigen::MatrixXf& A` | Matrix inverse (empty on failure) |
 
 ---
 
@@ -906,11 +955,11 @@ a(θ)[n] = exp(j * 2π * d/λ * n * sin(θ))
 
 | Backend | Low-Level | Eigen Wrappers | Total |
 |---------|-----------|----------------|-------|
-| NEON | 35 | 48 | 83 |
+| NEON | 48 | 56 | 104 |
 | CUDA | 98 | 144 | 242 |
 | Vulkan | 0 | 23 | 23 |
 | Radar | 24 | 24 | 48 |
-| **Total** | 157 | 239 | **396** |
+| **Total** | 170 | 247 | **417** |
 
 ### Performance Comparison
 

@@ -7,6 +7,7 @@ set(SOURCES
     neon/neon_resample.cpp
     neon/neon_iir.cpp
     neon/neon_conv2d.cpp
+    neon/neon_linalg.cpp
     vulkan/vulkan_backend.cpp
 )
 

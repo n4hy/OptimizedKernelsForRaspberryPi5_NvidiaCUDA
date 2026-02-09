@@ -308,5 +308,89 @@ namespace neon {
     // Eigen wrappers for 2D convolution
     Eigen::MatrixXf neon_conv2d(const Eigen::MatrixXf& in, const Eigen::MatrixXf& kernel);
 
+    // =========================================================================
+    // Dense Linear Algebra (column-major layout)
+    // =========================================================================
+
+    // --- Triangular Solve (raw pointer, column-major) ---
+
+    /** @brief Forward substitution: solve L*x = b (L lower triangular). b overwritten with x. */
+    void neon_trsv_lower_f32(float* b, const float* L, std::size_t n, std::size_t ldl);
+
+    /** @brief Backward substitution: solve U*x = b (U upper triangular). b overwritten with x. */
+    void neon_trsv_upper_f32(float* b, const float* U, std::size_t n, std::size_t ldu);
+
+    /** @brief Forward substitution with unit diagonal: solve L*x = b where diag(L) = 1. */
+    void neon_trsv_lower_unit_f32(float* b, const float* L, std::size_t n, std::size_t ldl);
+
+    /** @brief Solve L^T*x = b using lower triangular L. b overwritten with x. */
+    void neon_trsv_lower_trans_f32(float* b, const float* L, std::size_t n, std::size_t ldl);
+
+    /** @brief Multi-RHS lower triangular solve: solve L*X = B. B overwritten with X. */
+    void neon_trsm_lower_f32(float* B, const float* L, std::size_t n, std::size_t nrhs,
+                              std::size_t ldl, std::size_t ldb);
+
+    /** @brief Multi-RHS upper triangular solve: solve U*X = B. B overwritten with X. */
+    void neon_trsm_upper_f32(float* B, const float* U, std::size_t n, std::size_t nrhs,
+                              std::size_t ldu, std::size_t ldb);
+
+    // --- Decompositions (in-place, column-major) ---
+
+    /** @brief Cholesky decomposition A = L*L^T. A overwritten with L (lower).
+     *  @return 0 on success, or 1-based index of failing pivot if not SPD. */
+    int neon_cholesky_f32(float* A, std::size_t n, std::size_t lda);
+
+    /** @brief LU decomposition with partial pivoting. A overwritten with L\U.
+     *  @param piv Output pivot indices (size m).
+     *  @return 0 on success, or 1-based index of zero pivot if singular. */
+    int neon_lu_f32(float* A, int* piv, std::size_t m, std::size_t n, std::size_t lda);
+
+    /** @brief QR decomposition via Householder reflections.
+     *  A overwritten with R (upper part) and Householder vectors (lower part).
+     *  @param tau Householder scalars (size min(m,n)). */
+    void neon_qr_f32(float* A, float* tau, std::size_t m, std::size_t n, std::size_t lda);
+
+    /** @brief Extract explicit Q from stored Householder reflectors. */
+    void neon_qr_extract_q_f32(float* Q, const float* A, const float* tau,
+                                 std::size_t m, std::size_t n, std::size_t lda, std::size_t ldq);
+
+    // --- Solvers ---
+
+    /** @brief General solve A*x = b via LU. A and b overwritten. @return 0 or error. */
+    int neon_solve_f32(float* A, float* b, std::size_t n, std::size_t lda);
+
+    /** @brief SPD solve A*x = b via Cholesky. A and b overwritten. @return 0 or error. */
+    int neon_solve_spd_f32(float* A, float* b, std::size_t n, std::size_t lda);
+
+    /** @brief Matrix inverse via LU: Ainv = A^{-1}. @return 0 or error. */
+    int neon_inverse_f32(float* Ainv, const float* A, std::size_t n,
+                          std::size_t lda, std::size_t ldinv);
+
+    // --- Eigen Wrappers for Dense Linear Algebra ---
+
+    /** @brief Cholesky: returns lower L such that A = L*L^T. Empty matrix on failure. */
+    Eigen::MatrixXf neon_cholesky(const Eigen::MatrixXf& A);
+
+    /** @brief LU with partial pivoting: returns (LU combined, pivot vector). */
+    std::pair<Eigen::MatrixXf, Eigen::VectorXi> neon_lu(const Eigen::MatrixXf& A);
+
+    /** @brief QR: returns (Q, R). */
+    std::pair<Eigen::MatrixXf, Eigen::MatrixXf> neon_qr(const Eigen::MatrixXf& A);
+
+    /** @brief Triangular solve L*x = b (L lower). */
+    Eigen::VectorXf neon_trsv_lower(const Eigen::MatrixXf& L, const Eigen::VectorXf& b);
+
+    /** @brief Triangular solve U*x = b (U upper). */
+    Eigen::VectorXf neon_trsv_upper(const Eigen::MatrixXf& U, const Eigen::VectorXf& b);
+
+    /** @brief General solve A*x = b. */
+    Eigen::VectorXf neon_solve(const Eigen::MatrixXf& A, const Eigen::VectorXf& b);
+
+    /** @brief SPD solve A*x = b. */
+    Eigen::VectorXf neon_solve_spd(const Eigen::MatrixXf& A, const Eigen::VectorXf& b);
+
+    /** @brief Matrix inverse. Empty matrix on failure. */
+    Eigen::MatrixXf neon_inverse(const Eigen::MatrixXf& A);
+
 }
 }

@@ -60,6 +60,10 @@ add_executable(test_neon_conv2d test_neon_conv2d.cpp)
 target_link_libraries(test_neon_conv2d PRIVATE OptMathKernels::OptMathKernels gtest gtest_main)
 add_test(NAME test_neon_conv2d COMMAND test_neon_conv2d)
 
+add_executable(test_neon_linalg test_neon_linalg.cpp)
+target_link_libraries(test_neon_linalg PRIVATE OptMathKernels::OptMathKernels gtest gtest_main)
+add_test(NAME test_neon_linalg COMMAND test_neon_linalg)
+
 # CUDA tests (only if CUDA is enabled)
 if(ENABLE_CUDA)
     add_executable(test_cuda_kernels test_cuda_kernels.cpp)

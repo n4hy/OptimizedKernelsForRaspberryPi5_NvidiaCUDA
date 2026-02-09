@@ -97,6 +97,14 @@ project, providing hardware-accelerated kernels for:
 - **Biquad IIR Filter**: Direct Form II Transposed with cascade support, design helpers for lowpass/highpass/bandpass/notch
 - **2D Convolution**: NEON-vectorized general NxM convolution, separable kernels, unrolled 3x3 and 5x5 specializations
 
+### Dense Linear Algebra (`optmath::neon`)
+
+- **Triangular Solve (TRSV/TRSM)**: Column-oriented forward/backward substitution with NEON-vectorized AXPY updates, unit-diagonal and transpose variants, multi-RHS support
+- **Cholesky Decomposition**: Unblocked right-looking A = L*L^T with NEON dot products, SPD validation with error reporting
+- **LU Decomposition**: Partial pivoting with NEON-vectorized column scaling and rank-1 trailing updates
+- **QR Decomposition**: Householder reflections with NEON-vectorized reflector application, explicit Q extraction
+- **Solvers**: General solve (LU), SPD solve (Cholesky), matrix inverse (LU + TRSM)
+
 ### GPU Acceleration (`optmath::vulkan`)
 
 - **Tiled GPU Matrix Multiply**: 16x16 shared memory tiles for efficient GPU GEMM
@@ -367,7 +375,7 @@ ls /usr/local/lib/cmake/OptMathKernels/
 
 ## API Reference
 
-For complete API documentation of all **396+ functions**, see:
+For complete API documentation of all **417+ functions**, see:
 
 **[FunctionsIncluded.md](FunctionsIncluded.md)** - Complete API Reference
 
@@ -375,7 +383,7 @@ For complete API documentation of all **396+ functions**, see:
 
 | Backend | Functions | Description |
 |---------|-----------|-------------|
-| **NEON** | 103 | ARM SIMD operations for Raspberry Pi 5 |
+| **NEON** | 124 | ARM SIMD operations for Raspberry Pi 5 |
 | **CUDA** | 242 | NVIDIA GPU kernels (cuBLAS, cuFFT, cuSOLVER) |
 | **Vulkan** | 23 | Cross-platform GPU compute shaders |
 | **Radar** | 48 | Passive radar signal processing |
@@ -573,6 +581,38 @@ Eigen::MatrixXf kern(3, 3);
 kern << 1, 2, 1, 2, 4, 2, 1, 2, 1;
 kern /= 16.0f;
 Eigen::MatrixXf result = neon_conv2d(img, kern);
+```
+
+### NEON Dense Linear Algebra
+
+```cpp
+#include <optmath/neon_kernels.hpp>
+using namespace optmath::neon;
+
+// Cholesky decomposition (A = L * L^T)
+Eigen::MatrixXf A = /* symmetric positive definite matrix */;
+Eigen::MatrixXf L = neon_cholesky(A);  // returns lower triangular L
+
+// LU decomposition with partial pivoting
+Eigen::MatrixXf M = Eigen::MatrixXf::Random(64, 64);
+auto [LU, piv] = neon_lu(M);
+
+// QR decomposition (Householder)
+auto [Q, R] = neon_qr(M);  // Q orthogonal, R upper triangular
+
+// Solve A*x = b (general via LU)
+Eigen::VectorXf b = Eigen::VectorXf::Random(64);
+Eigen::VectorXf x = neon_solve(M, b);
+
+// Solve SPD system via Cholesky (faster for symmetric positive definite)
+Eigen::VectorXf x_spd = neon_solve_spd(A, b);
+
+// Triangular solve
+Eigen::VectorXf y = neon_trsv_lower(L, b);  // solve L*y = b
+Eigen::VectorXf z = neon_trsv_upper(R, b);  // solve R*z = b
+
+// Matrix inverse
+Eigen::MatrixXf Minv = neon_inverse(M);
 ```
 
 ### Radar: Cross-Ambiguity Function (CAF)
@@ -786,7 +826,7 @@ nvidia-smi
 ```
 OptMathKernels/
 ├── include/optmath/
-│   ├── neon_kernels.hpp      # NEON API declarations (103 functions)
+│   ├── neon_kernels.hpp      # NEON API declarations (124 functions)
 │   ├── vulkan_backend.hpp    # Vulkan API declarations (23 functions)
 │   ├── cuda_backend.hpp      # CUDA API declarations (242 functions)
 │   └── radar_kernels.hpp     # Radar processing API (48 functions)
@@ -798,7 +838,8 @@ OptMathKernels/
 │   │   ├── neon_radar.cpp          # Radar signal processing
 │   │   ├── neon_resample.cpp       # Polyphase resampler
 │   │   ├── neon_iir.cpp            # Biquad IIR filter
-│   │   └── neon_conv2d.cpp         # 2D convolution
+│   │   ├── neon_conv2d.cpp         # 2D convolution
+│   │   └── neon_linalg.cpp         # Dense linear algebra (Cholesky, LU, QR, solve, inverse)
 │   ├── vulkan/
 │   │   ├── vulkan_backend.cpp      # Vulkan context & dispatch
 │   │   └── shaders/                # 37 GLSL compute shaders
@@ -820,6 +861,7 @@ OptMathKernels/
 │   ├── test_neon_resample.cpp      # Polyphase resampler tests
 │   ├── test_neon_iir.cpp           # Biquad IIR filter tests
 │   ├── test_neon_conv2d.cpp        # 2D convolution tests
+│   ├── test_neon_linalg.cpp        # Dense linear algebra tests (21 tests)
 │   ├── test_vulkan_vector.cpp      # Vulkan vector tests
 │   ├── test_vulkan_matrix.cpp      # Vulkan matrix tests
 │   ├── test_vulkan_dsp.cpp         # Vulkan DSP tests
@@ -850,6 +892,44 @@ OptMathKernels/
 ---
 
 ## Recent Changes
+
+### v0.4.0 - Dense Linear Algebra: Cholesky, LU, QR, Solve, Inverse (February 2026)
+
+**New Dense Linear Algebra Kernels** (`neon_linalg.cpp`):
+
+- **Triangular Solve (TRSV/TRSM)**:
+  - Forward/backward substitution with NEON-vectorized AXPY column updates (`vld1q_f32`/`vmlaq_f32`)
+  - Unit-diagonal and transpose variants for composing with LU and Cholesky
+  - Multi-RHS TRSM for matrix inverse computation
+
+- **Cholesky Decomposition** (`neon_cholesky_f32`):
+  - Unblocked right-looking algorithm with NEON dot products
+  - SPD validation: returns 1-based error index if matrix is not positive definite
+  - Clean lower-triangular output (upper triangle zeroed)
+
+- **LU Decomposition** (`neon_lu_f32`):
+  - Partial pivoting with argmax pivot search
+  - NEON-vectorized column scaling and rank-1 trailing submatrix updates
+  - Row permutation vector output for solver composition
+
+- **QR Decomposition** (`neon_qr_f32`):
+  - Householder reflections with stable sign choice to avoid cancellation
+  - NEON-vectorized reflector application to trailing columns
+  - Explicit Q extraction via reverse-order reflector accumulation
+
+- **Solvers**:
+  - `neon_solve_f32`: General A*x=b via LU + TRSV
+  - `neon_solve_spd_f32`: SPD A*x=b via Cholesky + TRSV
+  - `neon_inverse_f32`: A^{-1} via LU + TRSM on identity columns
+
+- **Eigen Wrappers**: `neon_cholesky`, `neon_lu`, `neon_qr`, `neon_trsv_lower`, `neon_trsv_upper`, `neon_solve`, `neon_solve_spd`, `neon_inverse`
+
+**New Tests:**
+| Test Suite | Tests | Status |
+|------------|-------|--------|
+| `test_neon_linalg` | 21 | Passed |
+
+**Total: 88 individual test cases passed (21 new + 67 existing)**
 
 ### v0.3.0 - DSP Kernels: Resampler, IIR, 2D Convolution (February 2026)
 
