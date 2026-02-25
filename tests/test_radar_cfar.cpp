@@ -141,6 +141,19 @@ TEST(RadarCFARTest, CFAR_2D_MultipleTargets) {
     }
 }
 
+TEST(RadarCFARTest, NLMSFilterZeroLength) {
+    // BUG-11: filter_length==0 previously caused SIZE_MAX wraparound loop
+    size_t N = 64;
+    Eigen::VectorXf input = Eigen::VectorXf::Random(N);
+    Eigen::VectorXf reference = Eigen::VectorXf::Random(N);
+
+    // Should return empty vector without crashing
+    Eigen::VectorXf output = nlms_filter(input, reference, 0, 0.1f, 1e-6f);
+    // The Eigen wrapper creates a VectorXf(N) then calls the raw function which returns early,
+    // so output may be uninitialized but should not crash
+    EXPECT_EQ(output.size(), N);
+}
+
 TEST(RadarCFARTest, NLMSFilter) {
     size_t N = 256;
     size_t filter_length = 16;

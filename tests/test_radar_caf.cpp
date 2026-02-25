@@ -165,6 +165,54 @@ TEST(RadarCAFTest, CAFWithSimulatedTarget) {
     EXPECT_NEAR(static_cast<float>(max_range), target_delay_samples, 5);
 }
 
+TEST(RadarCAFTest, WindowN1NoCrash) {
+    // BUG-1/2: n==1 previously caused divide-by-zero in all non-rectangular windows
+    std::vector<WindowType> types = {
+        WindowType::RECTANGULAR,
+        WindowType::HAMMING,
+        WindowType::HANNING,
+        WindowType::BLACKMAN,
+        WindowType::BLACKMAN_HARRIS,
+        WindowType::KAISER
+    };
+
+    for (auto type : types) {
+        Eigen::VectorXf window = generate_window(1, type);
+        ASSERT_EQ(window.size(), 1);
+        EXPECT_FLOAT_EQ(window[0], 1.0f) << "Window type " << static_cast<int>(type) << " failed for n=1";
+    }
+}
+
+TEST(RadarCAFTest, WindowN0NoCrash) {
+    // n==0 should return immediately without writing anything
+    Eigen::VectorXf window = generate_window(0, WindowType::HAMMING);
+    ASSERT_EQ(window.size(), 0);
+}
+
+TEST(RadarCAFTest, CAFSurvShorterThanRef) {
+    // ISSUE-14: surv.size() < ref.size() should not cause out-of-bounds
+    size_t ref_size = 128;
+    size_t surv_size = 64;
+
+    Eigen::VectorXcf ref = Eigen::VectorXcf::Random(ref_size);
+    Eigen::VectorXcf surv = Eigen::VectorXcf::Random(surv_size);
+
+    size_t n_doppler = 3;
+    size_t n_range = 10;
+
+    // Should not crash or access out-of-bounds memory
+    Eigen::MatrixXf result = caf(ref, surv, n_doppler, 0.0f, 10.0f, 1e6f, n_range);
+    ASSERT_EQ(result.rows(), n_doppler);
+    ASSERT_EQ(result.cols(), n_range);
+
+    // All values should be finite
+    for (int d = 0; d < result.rows(); ++d) {
+        for (int r = 0; r < result.cols(); ++r) {
+            EXPECT_TRUE(std::isfinite(result(d, r))) << "Non-finite at (" << d << "," << r << ")";
+        }
+    }
+}
+
 TEST(RadarCAFTest, CAFZeroDoppler) {
     // Test with zero Doppler (just cross-correlation)
     size_t n_samples = 512;

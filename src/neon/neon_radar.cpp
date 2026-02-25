@@ -18,6 +18,7 @@ namespace radar {
 
 void generate_window_f32(float* window, std::size_t n, WindowType type, float beta) {
     if (n == 0) return;
+    if (n == 1) { window[0] = 1.0f; return; }
 
     const float pi = 3.14159265358979323846f;
 
@@ -371,10 +372,13 @@ Eigen::MatrixXf caf(const Eigen::VectorXcf& ref,
 
     Eigen::MatrixXf result(n_doppler_bins, n_range_bins);
 
+    std::size_t n_samples = std::min(static_cast<std::size_t>(ref.size()),
+                                     static_cast<std::size_t>(surv.size()));
+
     caf_f32(result.data(),
             ref_re.data(), ref_im.data(),
             surv_re.data(), surv_im.data(),
-            ref.size(),
+            n_samples,
             n_doppler_bins,
             doppler_start, doppler_step,
             sample_rate,
@@ -519,12 +523,31 @@ Eigen::Matrix<std::uint8_t, Eigen::Dynamic, Eigen::Dynamic> cfar_2d(
     std::size_t ref_range, std::size_t ref_doppler,
     float pfa_factor) {
 
-    Eigen::Matrix<std::uint8_t, Eigen::Dynamic, Eigen::Dynamic> detections(input.rows(), input.cols());
-    cfar_2d_f32(detections.data(), input.data(),
-                input.rows(), input.cols(),
+    std::size_t n_doppler = input.rows();
+    std::size_t n_range = input.cols();
+
+    // Convert from Eigen column-major to row-major layout expected by raw API
+    std::vector<float> in_rowmajor(n_doppler * n_range);
+    for (std::size_t d = 0; d < n_doppler; ++d) {
+        for (std::size_t r = 0; r < n_range; ++r) {
+            in_rowmajor[d * n_range + r] = input(d, r);
+        }
+    }
+
+    std::vector<std::uint8_t> det_rowmajor(n_doppler * n_range);
+    cfar_2d_f32(det_rowmajor.data(), in_rowmajor.data(),
+                n_doppler, n_range,
                 guard_range, guard_doppler,
                 ref_range, ref_doppler,
                 pfa_factor);
+
+    // Convert detections back to column-major Eigen matrix
+    Eigen::Matrix<std::uint8_t, Eigen::Dynamic, Eigen::Dynamic> detections(n_doppler, n_range);
+    for (std::size_t d = 0; d < n_doppler; ++d) {
+        for (std::size_t r = 0; r < n_range; ++r) {
+            detections(d, r) = det_rowmajor[d * n_range + r];
+        }
+    }
     return detections;
 }
 
@@ -537,8 +560,7 @@ void nlms_filter_f32(float* output, float* weights,
                      std::size_t n, std::size_t filter_length,
                      float mu, float eps) {
 
-    // Initialize weights to zero if not pre-initialized
-    // Caller should manage this
+    if (filter_length == 0 || n == 0) return;
 
     for (std::size_t i = filter_length - 1; i < n; ++i) {
         // Compute filter output (estimate of clutter)
@@ -859,11 +881,22 @@ Eigen::VectorXf beamform_delay_sum(const Eigen::MatrixXf& inputs,
                                    const Eigen::VectorXi& delays,
                                    const Eigen::VectorXf& weights) {
 
-    Eigen::VectorXf output(inputs.cols());
-    beamform_delay_sum_f32(output.data(), inputs.data(),
+    std::size_t n_channels = inputs.rows();
+    std::size_t n_samples = inputs.cols();
+
+    // Convert from Eigen column-major to row-major layout expected by raw API
+    Eigen::VectorXf in_flat(n_channels * n_samples);
+    for (std::size_t ch = 0; ch < n_channels; ++ch) {
+        for (std::size_t i = 0; i < n_samples; ++i) {
+            in_flat[ch * n_samples + i] = inputs(ch, i);
+        }
+    }
+
+    Eigen::VectorXf output(n_samples);
+    beamform_delay_sum_f32(output.data(), in_flat.data(),
                            delays.data(),
                            weights.size() > 0 ? weights.data() : nullptr,
-                           inputs.rows(), inputs.cols());
+                           n_channels, n_samples);
     return output;
 }
 

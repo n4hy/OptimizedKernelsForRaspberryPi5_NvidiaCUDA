@@ -90,7 +90,7 @@ struct DeviceInfo {
     // Architecture detection helpers
     bool is_volta_or_newer() const { return compute_capability_major >= 7; }
     bool is_ampere_or_newer() const { return compute_capability_major >= 8; }
-    bool is_ada_or_newer() const { return compute_capability_major >= 8 && compute_capability_minor >= 9; }
+    bool is_ada_or_newer() const { return compute_capability_major > 8 || (compute_capability_major == 8 && compute_capability_minor >= 9); }
     bool is_hopper_or_newer() const { return compute_capability_major >= 9; }
     bool is_blackwell_or_newer() const { return compute_capability_major >= 10; }
 };
