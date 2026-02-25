@@ -95,23 +95,11 @@ static void micro_kernel_8x8(
     }
 
     // Store results (add to existing C values)
-    // C is column-major, so C[i, j] is at C + j * ldc + i
-    // Row 0
-    vst1q_f32(C + 0 * ldc, vaddq_f32(vld1q_f32(C + 0 * ldc), c00));
-    vst1q_f32(C + 0 * ldc + 4, vaddq_f32(vld1q_f32(C + 0 * ldc + 4), c01));
-    // Wait, C is column-major for Eigen
-    // C[row, col] = C[row + col * ldc]
-    // We have c00 = C[0:4, 0:4]? No, we computed c_ij for row i, cols 0-3 and 4-7
+    // C is column-major: C[row, col] = C[row + col * ldc]
+    // Each c_ij register holds row i's results for cols 0-3 (c_i0) and 4-7 (c_i1)
+    // Must scatter-store since columns are strided in memory.
 
-    // Actually, let me reconsider the layout.
-    // With column-major C: accessing row 0, cols 0-3 means C[0], C[ldc], C[2*ldc], C[3*ldc]
-    // That's strided, not contiguous!
-
-    // For efficient stores, we should work with row-major C or transpose.
-    // Let's store row by row with strided access for column-major.
-
-    // Store row 0 (columns 0-3 and 4-7)
-    // C[0, j] = C[0 + j * ldc]
+    // Store row 0
     C[0 + 0*ldc] += vgetq_lane_f32(c00, 0);
     C[0 + 1*ldc] += vgetq_lane_f32(c00, 1);
     C[0 + 2*ldc] += vgetq_lane_f32(c00, 2);

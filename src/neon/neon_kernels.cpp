@@ -1,5 +1,6 @@
 #include "optmath/neon_kernels.hpp"
 #include <cmath>
+#include <cstring>
 #include <algorithm>
 
 #ifdef OPTMATH_USE_NEON
@@ -374,7 +375,6 @@ void neon_fast_exp_f32(float* out, const float* in, std::size_t n) {
 #ifdef OPTMATH_USE_NEON
     float32x4_t vlog2e = vdupq_n_f32(log2e);
     float32x4_t vln2 = vdupq_n_f32(ln2);
-    float32x4_t v0_5 = vdupq_n_f32(0.5f);
     float32x4_t vc0 = vdupq_n_f32(c0);
     float32x4_t vc1 = vdupq_n_f32(c1);
     float32x4_t vc2 = vdupq_n_f32(c2);
@@ -436,10 +436,11 @@ void neon_fast_exp_f32(float* out, const float* in, std::size_t n) {
         p = c1 + p * f;
         p = c0 + p * f;
 
-        int ki = (int)k + 127;
-        union { float f; int32_t i; } u;
-        u.i = ki << 23;
-        out[i] = p * u.f;
+        int32_t ki = (int32_t)k + 127;
+        int32_t bits = ki << 23;
+        float scale;
+        std::memcpy(&scale, &bits, sizeof(float));
+        out[i] = p * scale;
     }
 #else
     for (size_t i = 0; i < n; ++i) {
@@ -454,7 +455,6 @@ void neon_fast_sin_f32(float* out, const float* in, std::size_t n) {
 
     const float pi = 3.14159265358979323846f;
     const float inv_pi = 0.31830988618379067154f;
-    const float two_pi = 6.28318530717958647693f;
 
     // Chebyshev coefficients for sin(x*pi/2) on [-1, 1]
     // sin(x) = x * (c1 + x^2 * (c3 + x^2 * (c5 + x^2 * c7)))
@@ -805,8 +805,6 @@ Eigen::MatrixXf neon_mat_transpose(const Eigen::MatrixXf& A) {
 
     const long rows = A.rows();
     const long cols = A.cols();
-    const long lda = A.outerStride();  // Leading dimension of A (stride between columns)
-    const long ldc = C.outerStride();  // Leading dimension of C (stride between columns)
 
     for (long j = 0; j < cols; j += 4) {
         for (long i = 0; i < rows; i += 4) {

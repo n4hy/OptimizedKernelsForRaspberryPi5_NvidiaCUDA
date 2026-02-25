@@ -106,18 +106,6 @@ void caf_f32(float* out_mag,
              float sample_rate,
              std::size_t n_range_bins);
 
-/**
- * @brief Compute CAF using FFT-based method (faster for large arrays)
- */
-void caf_fft_f32(float* out_mag,
-                 const float* ref_re, const float* ref_im,
-                 const float* surv_re, const float* surv_im,
-                 std::size_t n_samples,
-                 std::size_t n_doppler_bins,
-                 float doppler_start, float doppler_step,
-                 float sample_rate,
-                 std::size_t n_range_bins);
-
 // Eigen wrapper
 Eigen::MatrixXf caf(const Eigen::VectorXcf& ref,
                     const Eigen::VectorXcf& surv,

@@ -392,8 +392,6 @@ void cfar_ca_f32(std::uint8_t* detections, float* threshold,
                  std::size_t guard_cells, std::size_t reference_cells,
                  float pfa_factor) {
 
-    std::size_t window_size = 2 * (guard_cells + reference_cells);
-
     for (std::size_t i = 0; i < n; ++i) {
         float sum = 0.0f;
         std::size_t count = 0;
