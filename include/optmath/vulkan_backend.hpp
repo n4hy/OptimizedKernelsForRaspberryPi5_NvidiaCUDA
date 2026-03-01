@@ -39,6 +39,10 @@ namespace vulkan {
         // Helper to find memory type
         uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
 #endif
+        // GPU detection flags
+        bool isMaliGpu = false;
+        bool isMaliG720 = false;
+
     private:
         VulkanContext() = default;
         ~VulkanContext() { cleanup(); }

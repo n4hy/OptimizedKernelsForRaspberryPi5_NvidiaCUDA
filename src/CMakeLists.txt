@@ -8,8 +8,27 @@ set(SOURCES
     neon/neon_iir.cpp
     neon/neon_conv2d.cpp
     neon/neon_linalg.cpp
+    platform/platform.cpp
     vulkan/vulkan_backend.cpp
 )
+
+# SVE2 sources (added conditionally)
+if(ENABLE_SVE2 AND ON_ARM AND HAS_SVE2)
+    set(SVE2_SOURCES
+        sve2/sve2_kernels.cpp
+        sve2/sve2_complex.cpp
+        sve2/sve2_radar.cpp
+    )
+
+    # Build SVE2 arch flag string
+    set(SVE2_ARCH_FLAGS "-march=armv9-a+sve2+bf16+i8mm")
+
+    set_source_files_properties(${SVE2_SOURCES} PROPERTIES
+        COMPILE_FLAGS "${SVE2_ARCH_FLAGS}")
+
+    list(APPEND SOURCES ${SVE2_SOURCES})
+    message(STATUS "SVE2 sources added with flags: ${SVE2_ARCH_FLAGS}")
+endif()
 
 # CUDA sources (added conditionally)
 if(ENABLE_CUDA)
@@ -79,6 +98,9 @@ if(ENABLE_VULKAN)
             caf_doppler_shift.comp.glsl
             caf_xcorr.comp.glsl
             cfar_2d.comp.glsl
+            # Mali-G720 optimized variants (32x32 tiles, 1024 threads)
+            mat_mul_tiled_mali.comp.glsl
+            reduce_sum_mali.comp.glsl
         )
 
         set(SPV_OUTPUTS "")

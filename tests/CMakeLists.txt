@@ -64,6 +64,18 @@ add_executable(test_neon_linalg test_neon_linalg.cpp)
 target_link_libraries(test_neon_linalg PRIVATE OptMathKernels::OptMathKernels gtest gtest_main)
 add_test(NAME test_neon_linalg COMMAND test_neon_linalg)
 
+# SVE2 tests (only if SVE2 is enabled)
+if(ENABLE_SVE2 AND ON_ARM AND HAS_SVE2)
+    add_executable(test_sve2_kernels test_sve2_kernels.cpp)
+    target_link_libraries(test_sve2_kernels PRIVATE OptMathKernels::OptMathKernels gtest gtest_main)
+    add_test(NAME test_sve2_kernels COMMAND test_sve2_kernels)
+endif()
+
+# Platform detection tests
+add_executable(test_platform test_platform.cpp)
+target_link_libraries(test_platform PRIVATE OptMathKernels::OptMathKernels gtest gtest_main)
+add_test(NAME test_platform COMMAND test_platform)
+
 # CUDA tests (only if CUDA is enabled)
 if(ENABLE_CUDA)
     add_executable(test_cuda_kernels test_cuda_kernels.cpp)

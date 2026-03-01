@@ -1,4 +1,5 @@
 #include "optmath/neon_kernels.hpp"
+#include "optmath/platform.hpp"
 #include <cstring>
 #include <algorithm>
 
@@ -14,27 +15,31 @@ namespace neon {
 // =========================================================================
 //
 // This implementation uses:
-// - Cache blocking with MC, KC, NC parameters tuned for Cortex-A76
+// - Cache blocking with MC, KC, NC parameters tuned at runtime
 // - Data packing for contiguous memory access
 // - 8x8 register-blocked microkernel
 //
 // Memory hierarchy targeting:
-// - L1 Data Cache: 64 KB per core (Cortex-A76)
-// - L2 Cache: 512 KB per core (Cortex-A76)
-// - Target: Keep A panel in L2, B panel in L1
+// - Cortex-A76 (Pi 5): L2=512KB, L3=2MB → MC=128, KC=256, NC=512
+// - Cortex-A720 (CIX P1): L2=512KB, L3=12MB → MC=256, KC=512, NC=1024
 
-// Cache blocking parameters (tuned for Cortex-A76)
-constexpr size_t MC = 128;  // Rows of A panel (fits in L2 with KC cols)
-constexpr size_t KC = 256;  // Columns of A panel = Rows of B panel
-constexpr size_t NC = 512;  // Columns of B panel
+// Runtime-selected cache blocking parameters
+static size_t get_mc() { return platform::get_gemm_mc(); }
+static size_t get_kc() { return platform::get_gemm_kc(); }
+static size_t get_nc() { return platform::get_gemm_nc(); }
+
+// Maximum possible values (for static buffer sizing)
+constexpr size_t MC_MAX = 256;
+constexpr size_t KC_MAX = 512;
+constexpr size_t NC_MAX = 1024;
 
 // Microkernel dimensions
 constexpr size_t MR = 8;    // Rows per microkernel
 constexpr size_t NR = 8;    // Cols per microkernel
 
-// Aligned buffer for packed matrices
-alignas(64) static thread_local float packed_A[MC * KC];
-alignas(64) static thread_local float packed_B[KC * NC];
+// Aligned buffer for packed matrices (sized to max values)
+alignas(64) static thread_local float packed_A[MC_MAX * KC_MAX];
+alignas(64) static thread_local float packed_B[KC_MAX * NC_MAX];
 
 #ifdef OPTMATH_USE_NEON
 
@@ -230,6 +235,11 @@ void neon_gemm_blocked_f32(
     size_t lda, size_t ldb, size_t ldc) {
 
 #ifdef OPTMATH_USE_NEON
+    // Runtime-selected cache blocking parameters
+    const size_t MC = get_mc();
+    const size_t KC = get_kc();
+    const size_t NC = get_nc();
+
     // Initialize C to zero
     for (size_t j = 0; j < N; ++j) {
         for (size_t i = 0; i < M; ++i) {

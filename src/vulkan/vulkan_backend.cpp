@@ -183,6 +183,23 @@ bool VulkanContext::init() {
         return false;
     }
 
+    // Detect GPU vendor and name for optimized shader selection
+    VkPhysicalDeviceProperties devProps;
+    vkGetPhysicalDeviceProperties(physicalDevice, &devProps);
+    std::string gpuName(devProps.deviceName);
+
+    // Mali GPU detection (vendor ID 0x13B5 = ARM)
+    isMaliGpu = (devProps.vendorID == 0x13B5);
+    isMaliG720 = isMaliGpu && (gpuName.find("Mali-G720") != std::string::npos ||
+                                gpuName.find("G720") != std::string::npos);
+
+    if (isMaliGpu) {
+        std::cerr << "[Vulkan] Mali GPU detected: " << gpuName << "\n";
+        if (isMaliG720) {
+            std::cerr << "[Vulkan] Mali-G720 Immortalis optimizations enabled\n";
+        }
+    }
+
     initialized = true;
     return true;
 }
@@ -728,11 +745,19 @@ Eigen::MatrixXf vulkan_mat_mul(const Eigen::MatrixXf& a, const Eigen::MatrixXf& 
 
     struct { uint32_t M; uint32_t K; uint32_t N; } push = { (uint32_t)M, (uint32_t)K, (uint32_t)N };
 
-    // Grid matches output size MxN
-    uint32_t gx = (uint32_t)((M + 15) / 16); // Rows
-    uint32_t gy = (uint32_t)((N + 15) / 16); // Cols
-
-    run_compute("mat_mul.comp.spv", {&bufA, &bufB, &bufOut}, &push, sizeof(push), gx, gy);
+    // Select shader and tile size based on GPU
+    auto& ctx = VulkanContext::get();
+    if (ctx.isMaliG720) {
+        // Mali-G720 optimized: 32x32 tiles, 1024 threads per workgroup
+        uint32_t gx = (uint32_t)((M + 31) / 32);
+        uint32_t gy = (uint32_t)((N + 31) / 32);
+        run_compute("mat_mul_tiled_mali.comp.spv", {&bufA, &bufB, &bufOut}, &push, sizeof(push), gx, gy);
+    } else {
+        // Default: 16x16 tiles
+        uint32_t gx = (uint32_t)((M + 15) / 16);
+        uint32_t gy = (uint32_t)((N + 15) / 16);
+        run_compute("mat_mul.comp.spv", {&bufA, &bufB, &bufOut}, &push, sizeof(push), gx, gy);
+    }
 
     Eigen::MatrixXf res(M, N);
     bufOut.mapAndCopyTo(res.data());
@@ -990,12 +1015,12 @@ Eigen::MatrixXf vulkan_correlation_2d(const Eigen::MatrixXf& x, const Eigen::Mat
 }
 
 // Helper for reduction
-static float run_reduction(const Eigen::VectorXf& a, const std::string& shaderName, float initialVal, float (*cpuReduce)(float, float)) {
+static float run_reduction(const Eigen::VectorXf& a, const std::string& shaderName, float initialVal, float (*cpuReduce)(float, float), uint32_t workgroupSize = 256) {
     if (!is_available() || a.size() == 0) return initialVal;
 
     size_t count = a.size();
     size_t sizeBytes = count * sizeof(float);
-    uint32_t groupCount = (uint32_t)((count + 255) / 256);
+    uint32_t groupCount = (uint32_t)((count + workgroupSize - 1) / workgroupSize);
 
     BufferWrapper bufA(sizeBytes);
     BufferWrapper bufOut(groupCount * sizeof(float));
@@ -1017,6 +1042,10 @@ static float run_reduction(const Eigen::VectorXf& a, const std::string& shaderNa
 }
 
 float vulkan_reduce_sum(const Eigen::VectorXf& a) {
+    auto& ctx = VulkanContext::get();
+    if (ctx.isMaliG720) {
+        return run_reduction(a, "reduce_sum_mali.comp.spv", 0.0f, [](float x, float y){ return x + y; }, 1024);
+    }
     return run_reduction(a, "reduce_sum.comp.spv", 0.0f, [](float x, float y){ return x + y; });
 }
 

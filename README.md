@@ -1,11 +1,12 @@
 # OptMathKernels
 
-**High-Performance Numerical Library for Raspberry Pi 5 and NVIDIA GPUs**
+**High-Performance Numerical Library for ARM SBCs and NVIDIA GPUs**
 
-OptMathKernels is a C++20 numerical library optimized for **Raspberry Pi 5** and **NVIDIA CUDA GPUs**. It seamlessly bridges **Eigen** (CPU), **ARM NEON** (SIMD), **Vulkan** (Compute Shaders), and **CUDA** (NVIDIA GPUs) into a single, easy-to-use API.
+OptMathKernels is a C++20 numerical library optimized for **Raspberry Pi 5**, **Orange Pi 6 Plus**, and **NVIDIA CUDA GPUs**. It seamlessly bridges **Eigen** (CPU), **ARM NEON** (SIMD), **ARM SVE2** (Scalable Vectors), **Vulkan** (Compute Shaders), and **CUDA** (NVIDIA GPUs) into a single, easy-to-use API.
 
 Designed to accelerate math and signal processing tasks by leveraging:
 - **Raspberry Pi 5**: Cortex-A76 NEON and VideoCore VII GPU
+- **Orange Pi 6 Plus**: Cortex-A720 SVE2/FCMA/I8MM and Mali-G720-Immortalis GPU
 - **NVIDIA GPUs**: cuBLAS, cuFFT, cuSOLVER, and Tensor Cores (Volta+)
 
 While remaining compatible with standard Linux x86/ARM environments.
@@ -17,6 +18,7 @@ While remaining compatible with standard Linux x86/ARM environments.
 - [Key Applications](#key-applications)
 - [Features](#features)
 - [Hardware Support](#hardware-support)
+  - [Orange Pi 6 Plus (CIX P1)](#orange-pi-6-plus-cix-p1)
   - [Raspberry Pi 5](#raspberry-pi-5)
   - [x86_64 (Intel/AMD)](#x86_64-intelamd)
   - [NVIDIA CUDA/RTX](#nvidia-cudartx)
@@ -88,8 +90,25 @@ project, providing hardware-accelerated kernels for:
 
 - **Vectorized Transcendentals**: Fast NEON-accelerated exp, sin, cos, sigmoid, tanh (~10-50x faster than scalar)
 - **Complex Operations**: Vectorized complex multiply, conjugate multiply, magnitude, phase
-- **Cache-Blocked GEMM**: 8x8 microkernel with MC=128, KC=256 blocking for Cortex-A76
+- **Cache-Blocked GEMM**: 8x8 microkernel with runtime cache blocking (MC/KC/NC auto-tuned for detected L3 cache size)
 - **Reductions**: Sum, max, min, dot product with horizontal NEON adds
+
+### SVE2 Acceleration (`optmath::sve2`)
+
+- **Predicated Vector Operations**: All loops use `svwhilelt`/`svptest` predication - zero tail-handling code
+- **FCMA Complex Multiply**: 2-instruction complex multiply via `svcmla` (vs 4 NEON instructions)
+- **I8MM GEMM**: Int8 matrix multiply using `svmmla_s32` with float32 quantize/dequantize
+- **SVE2 Cache-Blocked GEMM**: Tuned for Cortex-A720 12MB L3 (MC=256, KC=512, NC=1024)
+- **SVE2 Transcendentals**: Same polynomial approximations as NEON but with predicated loops
+- **SVE2 Radar DSP**: FCMA-accelerated CAF, cross-correlation, and beamforming
+- **SVE2 Complex Operations**: Split and interleaved formats, dot product, magnitude, phase
+
+### Platform Detection (`optmath::platform`)
+
+- **CPU Topology Detection**: Identifies big.LITTLE core clusters via `/proc/cpuinfo` and sysfs
+- **Thread Affinity**: Pin threads to performance (A720) or efficiency (A520) cores
+- **SVE Vector Length**: Runtime detection via `prctl(PR_SVE_GET_VL)`
+- **Cache-Aware GEMM Tuning**: Auto-selects blocking parameters based on detected L3 cache size
 
 ### DSP Kernels (`optmath::neon`)
 
@@ -107,10 +126,11 @@ project, providing hardware-accelerated kernels for:
 
 ### GPU Acceleration (`optmath::vulkan`)
 
-- **Tiled GPU Matrix Multiply**: 16x16 shared memory tiles for efficient GPU GEMM
+- **Tiled GPU Matrix Multiply**: 16x16 shared memory tiles (default), 32x32 tiles for Mali-G720
 - **FFT**: Radix-2/4 FFT with butterfly operations in compute shaders
 - **Convolution**: 1D and 2D convolution with separable kernel optimization
 - **Vector Operations**: Add, multiply, dot product, reductions
+- **Mali-G720 Optimized**: Auto-selects 1024-thread shaders with subgroup arithmetic on Mali GPUs
 
 ### NVIDIA CUDA Acceleration (`optmath::cuda`)
 
@@ -127,6 +147,51 @@ project, providing hardware-accelerated kernels for:
 ---
 
 ## Hardware Support
+
+### Orange Pi 6 Plus (CIX P1)
+
+**Target Hardware**: Orange Pi 6 Plus with CIX P1 CD8160 SoC (ARMv9)
+
+| Feature | Specification |
+|---------|---------------|
+| **CPU** | 8x Cortex-A720 + 4x Cortex-A520 (big.LITTLE) |
+| **SIMD** | NEON (128-bit) + SVE2 (128-bit VL) + FCMA + I8MM + BF16 |
+| **GPU** | Mali-G720-Immortalis (Vulkan 1.3) |
+| **Memory** | 8GB/16GB LPDDR5 |
+| **L1 Cache** | 64KB per core |
+| **L2 Cache** | 512KB per core |
+| **L3 Cache** | 12MB shared |
+
+**SVE2 Optimizations**:
+- Predicated loops eliminate all scalar tail handling (vs 28+ NEON tail loops)
+- FCMA complex multiply: 2 instructions vs 4 NEON instructions per complex multiply
+- I8MM: Hardware int8 matrix multiply with `svmmla_s32`
+- Cache blocking tuned for 12MB L3: MC=256, KC=512, NC=1024
+
+**Mali-G720-Immortalis GPU (Vulkan)**:
+| Feature | Specification |
+|---------|---------------|
+| **Vulkan** | 1.3 |
+| **Shared Memory** | 32KB per workgroup |
+| **Max Workgroup Size** | 1024 |
+| **Subgroup Size** | 16 |
+| **Subgroup Ops** | Arithmetic (subgroupAdd, etc.) |
+
+- 32x32 tiled GEMM shader (1024 threads, 8KB shared memory)
+- 1024-thread reduction with subgroup-level arithmetic
+
+**Build for Orange Pi 6 Plus**:
+```bash
+cmake -DCMAKE_BUILD_TYPE=Release \
+      -DENABLE_NEON=ON \
+      -DENABLE_SVE2=ON \
+      -DENABLE_VULKAN=ON \
+      -DENABLE_CUDA=OFF \
+      -DBUILD_TESTS=ON ..
+make -j$(nproc)
+```
+
+---
 
 ### Raspberry Pi 5
 
@@ -149,9 +214,10 @@ project, providing hardware-accelerated kernels for:
 - Parallel magnitude/phase computation
 - Cache-blocked GEMM tuned for A76 cache hierarchy
 
-**Cache Blocking Parameters** (optimized for Cortex-A76):
+**Cache Blocking Parameters** (auto-tuned per platform):
 ```cpp
-// MC=128, KC=256, NC=512 chosen to maximize L2 utilization
+// Pi 5 (2MB L3):  MC=128, KC=256, NC=512
+// Orange Pi 6+ (12MB L3): MC=256, KC=512, NC=1024
 // 8x8 microkernel with 4x4 register tiles (32 NEON registers)
 neon_gemm_blocked_f32(C, A, B, M, N, K, lda, ldb, ldc);
 ```
@@ -231,6 +297,7 @@ cat /proc/cpuinfo | grep avx2
 | **AMD** | RX 400+, RDNA/RDNA2/RDNA3 | 1.3 | Mesa RADV |
 | **Intel** | UHD 600+, Arc | 1.3 | Mesa ANV |
 | **Raspberry Pi 5** | VideoCore VII | 1.2 | Mesa V3D |
+| **Orange Pi 6 Plus** | Mali-G720-Immortalis | 1.3 | Mali (panfrost/panvk) |
 | **Qualcomm** | Adreno 6xx+ | 1.1 | Proprietary |
 
 **VideoCore VII (Raspberry Pi 5)**:
@@ -242,7 +309,7 @@ cat /proc/cpuinfo | grep avx2
 | **Shared Memory** | 4KB per workgroup |
 | **Max Workgroup Size** | 256 |
 
-**Vulkan Compute Shaders**: 37 GLSL compute shaders compiled to SPIR-V:
+**Vulkan Compute Shaders**: 39 GLSL compute shaders compiled to SPIR-V:
 - Vector operations (add, sub, mul, div, dot, norm)
 - Matrix operations (add, mul, transpose, scale)
 - Reductions (sum, max, min, prefix scan)
@@ -346,6 +413,9 @@ make -j$(nproc)
 | Option | Default | Description |
 |--------|---------|-------------|
 | `ENABLE_NEON` | ON (ARM) | Enable ARM NEON SIMD |
+| `ENABLE_SVE2` | ON | Enable ARM SVE2 (ARMv9) |
+| `ENABLE_FCMA` | ON | Enable FCMA complex multiply |
+| `ENABLE_I8MM` | ON | Enable I8MM int8 matrix multiply |
 | `ENABLE_VULKAN` | ON | Enable Vulkan compute |
 | `ENABLE_CUDA` | OFF | Enable NVIDIA CUDA |
 | `CMAKE_CUDA_ARCHITECTURES` | 75;86;89 | CUDA compute capabilities |
@@ -375,7 +445,7 @@ ls /usr/local/lib/cmake/OptMathKernels/
 
 ## API Reference
 
-For complete API documentation of all **417+ functions**, see:
+For complete API documentation of all **490+ functions**, see:
 
 **[FunctionsIncluded.md](FunctionsIncluded.md)** - Complete API Reference
 
@@ -383,7 +453,9 @@ For complete API documentation of all **417+ functions**, see:
 
 | Backend | Functions | Description |
 |---------|-----------|-------------|
-| **NEON** | 104 | ARM SIMD operations for Raspberry Pi 5 |
+| **NEON** | 104 | ARM SIMD operations for Raspberry Pi 5 / Orange Pi 6 Plus |
+| **SVE2** | 46 | ARM SVE2/FCMA/I8MM for ARMv9 (Orange Pi 6 Plus) |
+| **Platform** | 10 | CPU topology detection, thread affinity, cache tuning |
 | **CUDA** | 242 | NVIDIA GPU kernels (cuBLAS, cuFFT, cuSOLVER) |
 | **Vulkan** | 23 | Cross-platform GPU compute shaders |
 | **Radar** | 48 | Passive radar signal processing |
@@ -392,6 +464,8 @@ For complete API documentation of all **417+ functions**, see:
 
 ```cpp
 #include <optmath/neon_kernels.hpp>    // ARM NEON operations
+#include <optmath/sve2_kernels.hpp>    // ARM SVE2/FCMA/I8MM operations
+#include <optmath/platform.hpp>        // CPU detection, thread affinity
 #include <optmath/vulkan_backend.hpp>  // Vulkan GPU compute
 #include <optmath/cuda_backend.hpp>    // NVIDIA CUDA operations
 #include <optmath/radar_kernels.hpp>   // Radar signal processing
@@ -827,6 +901,8 @@ nvidia-smi
 OptMathKernels/
 ├── include/optmath/
 │   ├── neon_kernels.hpp      # NEON API declarations (124 functions)
+│   ├── sve2_kernels.hpp      # SVE2/FCMA/I8MM API declarations (46 functions)
+│   ├── platform.hpp          # Platform detection, thread affinity (10 functions)
 │   ├── vulkan_backend.hpp    # Vulkan API declarations (23 functions)
 │   ├── cuda_backend.hpp      # CUDA API declarations (242 functions)
 │   └── radar_kernels.hpp     # Radar processing API (48 functions)
@@ -834,17 +910,25 @@ OptMathKernels/
 │   ├── neon/
 │   │   ├── neon_kernels.cpp        # Core NEON + transcendentals
 │   │   ├── neon_complex.cpp        # Complex number operations
-│   │   ├── neon_gemm_optimized.cpp # Cache-blocked GEMM
+│   │   ├── neon_gemm_optimized.cpp # Cache-blocked GEMM (runtime-tuned)
 │   │   ├── neon_radar.cpp          # Radar signal processing
 │   │   ├── neon_resample.cpp       # Polyphase resampler
 │   │   ├── neon_iir.cpp            # Biquad IIR filter
 │   │   ├── neon_conv2d.cpp         # 2D convolution
 │   │   └── neon_linalg.cpp         # Dense linear algebra (Cholesky, LU, QR, solve, inverse)
+│   ├── sve2/
+│   │   ├── sve2_kernels.cpp        # SVE2 vector ops, transcendentals, GEMM, I8MM
+│   │   ├── sve2_complex.cpp        # SVE2/FCMA complex operations
+│   │   └── sve2_radar.cpp          # SVE2 radar DSP (CAF, xcorr, beamform)
+│   ├── platform/
+│   │   └── platform.cpp            # CPU topology, thread affinity, cache detection
 │   ├── vulkan/
-│   │   ├── vulkan_backend.cpp      # Vulkan context & dispatch
-│   │   └── shaders/                # 37 GLSL compute shaders
+│   │   ├── vulkan_backend.cpp      # Vulkan context & dispatch (Mali-G720 auto-detect)
+│   │   └── shaders/                # 39 GLSL compute shaders
 │   │       ├── vec_add.comp.glsl
 │   │       ├── mat_mul_tiled.comp.glsl
+│   │       ├── mat_mul_tiled_mali.comp.glsl  # 32x32 tiles for Mali-G720
+│   │       ├── reduce_sum_mali.comp.glsl     # 1024-thread subgroup reduction
 │   │       ├── fft_radix2.comp.glsl
 │   │       ├── caf_doppler_shift.comp.glsl
 │   │       ├── cfar_2d.comp.glsl
@@ -862,6 +946,8 @@ OptMathKernels/
 │   ├── test_neon_iir.cpp           # Biquad IIR filter tests
 │   ├── test_neon_conv2d.cpp        # 2D convolution tests
 │   ├── test_neon_linalg.cpp        # Dense linear algebra tests (21 tests)
+│   ├── test_sve2_kernels.cpp       # SVE2 unit tests (18 tests)
+│   ├── test_platform.cpp           # Platform detection tests (9 tests)
 │   ├── test_vulkan_vector.cpp      # Vulkan vector tests
 │   ├── test_vulkan_matrix.cpp      # Vulkan matrix tests
 │   ├── test_vulkan_dsp.cpp         # Vulkan DSP tests
@@ -892,6 +978,44 @@ OptMathKernels/
 ---
 
 ## Recent Changes
+
+### v0.5.0 - Orange Pi 6 Plus: SVE2, FCMA, I8MM, Mali-G720 (March 2026)
+
+**New Platform: Orange Pi 6 Plus (CIX P1 CD8160)**
+
+Full hardware-specific optimization for the CIX P1 SoC's ARMv9 big.LITTLE cores and Mali-G720-Immortalis GPU.
+
+**SVE2 Acceleration** (`sve2_kernels.cpp`, `sve2_complex.cpp`, `sve2_radar.cpp`):
+- Predicated vector operations: `svwhilelt`/`svptest` loops eliminate all scalar tail handling
+- FCMA complex multiply: `svcmla_f32_z` for 2-instruction complex multiply (vs 4 NEON)
+- I8MM GEMM: `svmmla_s32` hardware int8 matrix multiply with float32 quantization
+- SVE2 cache-blocked GEMM tuned for A720 12MB L3 (MC=256, KC=512, NC=1024)
+- Complete SVE2 transcendentals: exp, sin, cos, sigmoid, tanh
+- SVE2 radar DSP: CAF with FCMA inner loop, cross-correlation, beamforming
+
+**Platform Detection** (`platform.cpp`):
+- CPU topology detection via `/proc/cpuinfo` and sysfs (A720/A520 part IDs)
+- Thread affinity: pin to performance or efficiency cores via `sched_setaffinity`
+- SVE vector length detection via `prctl(PR_SVE_GET_VL)`
+- Runtime GEMM cache blocking parameter selection based on L3 cache size
+
+**NEON GEMM Runtime Tuning** (`neon_gemm_optimized.cpp`):
+- Cache blocking parameters now auto-selected at runtime based on detected hardware
+- 12MB L3 (A720): MC=256, KC=512, NC=1024; 2MB L3 (A76): MC=128, KC=256, NC=512
+
+**Mali-G720 Vulkan Shaders** (`vulkan_backend.cpp`):
+- Auto-detects Mali-G720 via vendor ID and device name
+- 32x32 tiled GEMM shader (1024 threads, 8KB shared memory)
+- 1024-thread reduction with `subgroupAdd()` subgroup arithmetic
+- Transparent fallback to standard shaders on non-Mali GPUs
+
+**New Tests:**
+| Test Suite | Tests | Description |
+|------------|-------|-------------|
+| `test_sve2_kernels` | 18 | SVE2 correctness, edge cases, stress tests |
+| `test_platform` | 9 | CPU topology, affinity, cache detection |
+
+---
 
 ### v0.4.0 - Dense Linear Algebra: Cholesky, LU, QR, Solve, Inverse (February 2026)
 
