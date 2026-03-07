@@ -979,6 +979,56 @@ OptMathKernels/
 
 ## Recent Changes
 
+### v0.5.1 - Bug Fixes: Numerical Stability and Error Handling (March 2026)
+
+**Critical Bug Fixes:**
+
+- **SVE2 Accumulation Bug** (`sve2_radar.cpp`, `sve2_complex.cpp`):
+  - Fixed predicate variant: changed `_z` (zeroing) to `_m` (merging) for accumulation operations
+  - The zeroing variant was destroying accumulated values in inactive lanes during predicated loops
+  - Affected: CAF, cross-correlation, complex dot product, and beamforming kernels
+
+- **SVE2 Loop Termination** (`sve2_complex.cpp`, `sve2_radar.cpp`):
+  - Fixed: `svptest_first` → `svptest_any` to prevent premature loop exit
+  - `svptest_first` could exit early when the first lane was inactive but other lanes had work remaining
+
+- **CUDA Window Division by Zero** (`cuda_radar.cu`):
+  - Added `safe_window_divisor()` helper to prevent NaN when generating windows with n=1
+  - Affected: Hamming, Hanning, Blackman, Blackman-Harris, Kaiser window functions
+
+- **CUDA Warp Reduction Race Condition** (`cuda_complex.cu`):
+  - Added guard for `blockDim.x < 64` to prevent reading uninitialized shared memory
+  - The warp reduction assumed at least 64 threads but smaller blocks could be launched
+
+- **CUDA/cuFFT Error Handling** (`cuda_backend.cpp`):
+  - Added error checking for `cufftExecC2C` and memory allocation functions
+  - Previously silent failures could occur on FFT execution errors
+
+**Numerical Stability Fixes:**
+
+- **NEON IIR Parameter Validation** (`neon_iir.cpp`):
+  - Added `validate_iir_params()` to prevent division by zero when Q=0
+  - Validates: Q > 0, 0 < fc < fs/2, fs > 0
+  - Returns unity pass-through filter coefficients on invalid parameters
+  - Affected: `neon_biquad_lowpass`, `neon_biquad_highpass`, `neon_biquad_bandpass`, `neon_biquad_notch`
+
+- **NEON Householder QR Stability** (`neon_linalg.cpp`):
+  - Fixed potential division by zero when `alpha ≈ beta` in Householder reflection
+  - Added threshold check: if `|alpha - beta| < 1e-30`, skip reflection (column already normalized)
+
+**Vulkan Error Handling** (`vulkan_backend.cpp`):
+  - Added error checking for: `vkAllocateCommandBuffers`, `vkBeginCommandBuffer`, `vkEndCommandBuffer`, `vkQueueSubmit`, `vkQueueWaitIdle`
+  - Proper resource cleanup on error paths
+
+**Test Improvements:**
+
+- **Platform Test Portability** (`test_platform.cpp`):
+  - Made ARM-specific assertions conditional on detecting target platform
+  - Tests now pass on both ARM (Orange Pi 6 Plus, Raspberry Pi 5) and x86_64 development machines
+  - Platform-specific checks (core part IDs, SVE2 features, efficiency cores) only run on appropriate hardware
+
+---
+
 ### v0.5.0 - Orange Pi 6 Plus: SVE2, FCMA, I8MM, Mali-G720 (March 2026)
 
 **New Platform: Orange Pi 6 Plus (CIX P1 CD8160)**
