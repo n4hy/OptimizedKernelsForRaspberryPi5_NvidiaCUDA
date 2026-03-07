@@ -224,9 +224,12 @@ __global__ void kernel_complex_dot_reduce_f32(float* __restrict__ out_re,
     float final_im = (tid < 32) ? sdata_im[tid] : 0.0f;
 
     if (tid < 32) {
-        // Add the second half of the warp's data
-        final_re += sdata_re[tid + 32];
-        final_im += sdata_im[tid + 32];
+        // Add the second half of the warp's data (only if blockDim.x >= 64)
+        // Guard against out-of-bounds access when blockDim.x < 64
+        if (blockDim.x >= 64) {
+            final_re += sdata_re[tid + 32];
+            final_im += sdata_im[tid + 32];
+        }
         warp_reduce_complex(final_re, final_im);
     }
 

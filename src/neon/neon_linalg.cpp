@@ -296,11 +296,21 @@ void neon_qr_f32(float* A, float* tau, std::size_t m, std::size_t n, std::size_t
         float sign = (alpha >= 0.0f) ? 1.0f : -1.0f;
         float beta = -sign * norm;
 
+        // Check for near-zero denominator (alpha ≈ beta means column already normalized)
+        float denom = alpha - beta;
+        const float eps = 1.0e-30f;  // Tiny threshold for numerical stability
+        if (std::fabs(denom) < eps) {
+            // Column is essentially already a scaled unit vector; no reflection needed
+            tau[j] = 0.0f;
+            col[0] = beta;
+            continue;
+        }
+
         // tau = (beta - alpha) / beta
         tau[j] = (beta - alpha) / beta;
 
         // v = col / (alpha - beta), with v[0] = 1
-        float scale = 1.0f / (alpha - beta);
+        float scale = 1.0f / denom;
         for (std::size_t i = 1; i < len; ++i) {
             col[i] *= scale;
         }

@@ -46,7 +46,7 @@ void sve2_complex_mul_f32(float* out_re, float* out_im,
         svst1_f32(pg, out_im + i, oi_val);
 
         i += svcntw();
-    } while (svptest_first(svptrue_b32(), svwhilelt_b32(i, (uint64_t)n)));
+    } while (svptest_any(svptrue_b32(), svwhilelt_b32(i, (uint64_t)n)));
 #else
     neon::neon_complex_mul_f32(out_re, out_im, a_re, a_im, b_re, b_im, n);
 #endif
@@ -83,7 +83,7 @@ void sve2_complex_conj_mul_f32(float* out_re, float* out_im,
         svst1_f32(pg, out_im + i, oi_val);
 
         i += svcntw();
-    } while (svptest_first(svptrue_b32(), svwhilelt_b32(i, (uint64_t)n)));
+    } while (svptest_any(svptrue_b32(), svwhilelt_b32(i, (uint64_t)n)));
 #else
     neon::neon_complex_conj_mul_f32(out_re, out_im, a_re, a_im, b_re, b_im, n);
 #endif
@@ -135,7 +135,7 @@ void sve2_complex_mul_interleaved_f32(float* out, const float* a,
         svst1_f32(pg, out + i, acc);
 
         i += svcntw();
-    } while (svptest_first(svptrue_b32(), svwhilelt_b32(i, total)));
+    } while (svptest_any(svptrue_b32(), svwhilelt_b32(i, total)));
 #else
     neon::neon_complex_mul_interleaved_f32(out, a, b, n);
 #endif
@@ -184,7 +184,7 @@ void sve2_complex_conj_mul_interleaved_f32(float* out, const float* a,
         svst1_f32(pg, out + i, acc);
 
         i += svcntw();
-    } while (svptest_first(svptrue_b32(), svwhilelt_b32(i, total)));
+    } while (svptest_any(svptrue_b32(), svwhilelt_b32(i, total)));
 #else
     neon::neon_complex_conj_mul_interleaved_f32(out, a, b, n);
 #endif
@@ -222,7 +222,7 @@ void sve2_complex_dot_f32(float* out_re, float* out_im,
         sum_im = svmls_f32_m(pg, sum_im, ai, br);
 
         i += svcntw();
-    } while (svptest_first(svptrue_b32(), svwhilelt_b32(i, (uint64_t)n)));
+    } while (svptest_any(svptrue_b32(), svwhilelt_b32(i, (uint64_t)n)));
 
     // Horizontal reduction across all lanes
     *out_re = svaddv_f32(svptrue_b32(), sum_re);
@@ -256,7 +256,7 @@ void sve2_complex_magnitude_f32(float* out, const float* re,
         svst1_f32(pg, out + i, mag);
 
         i += svcntw();
-    } while (svptest_first(svptrue_b32(), svwhilelt_b32(i, (uint64_t)n)));
+    } while (svptest_any(svptrue_b32(), svwhilelt_b32(i, (uint64_t)n)));
 #else
     neon::neon_complex_magnitude_f32(out, re, im, n);
 #endif
@@ -300,7 +300,7 @@ void sve2_complex_add_f32(float* out_re, float* out_im,
         svst1_f32(pg, out_im + i, svadd_f32_z(pg, ai, bi));
 
         i += svcntw();
-    } while (svptest_first(svptrue_b32(), svwhilelt_b32(i, (uint64_t)n)));
+    } while (svptest_any(svptrue_b32(), svwhilelt_b32(i, (uint64_t)n)));
 #else
     neon::neon_complex_add_f32(out_re, out_im, a_re, a_im, b_re, b_im, n);
 #endif
@@ -338,7 +338,7 @@ void sve2_complex_scale_f32(float* out_re, float* out_im,
         svst1_f32(pg, out_im + i, oi_val);
 
         i += svcntw();
-    } while (svptest_first(svptrue_b32(), svwhilelt_b32(i, (uint64_t)n)));
+    } while (svptest_any(svptrue_b32(), svwhilelt_b32(i, (uint64_t)n)));
 #else
     neon::neon_complex_scale_f32(out_re, out_im, in_re, in_im, scale_re, scale_im, n);
 #endif

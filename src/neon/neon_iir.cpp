@@ -61,7 +61,37 @@ void neon_biquad_cascade_f32(float* out, const float* in, std::size_t n,
 // Biquad Design Helpers (Audio EQ Cookbook by Robert Bristow-Johnson)
 // =========================================================================
 
+// Helper to validate IIR filter design parameters
+// Returns true if valid, false otherwise (and returns unity pass-through coeffs)
+static bool validate_iir_params(float fc, float fs, float Q, BiquadCoeffs& fallback) {
+    // Initialize fallback to unity pass-through (no filtering)
+    fallback.b0 = 1.0f;
+    fallback.b1 = 0.0f;
+    fallback.b2 = 0.0f;
+    fallback.a1 = 0.0f;
+    fallback.a2 = 0.0f;
+
+    // Q must be positive to avoid division by zero
+    if (Q <= 0.0f) {
+        return false;
+    }
+    // Cutoff frequency must be in valid range (0, fs/2)
+    if (fc <= 0.0f || fc >= fs * 0.5f) {
+        return false;
+    }
+    // Sample rate must be positive
+    if (fs <= 0.0f) {
+        return false;
+    }
+    return true;
+}
+
 BiquadCoeffs neon_biquad_lowpass(float fc, float fs, float Q) {
+    BiquadCoeffs c;
+    if (!validate_iir_params(fc, fs, Q, c)) {
+        return c;  // Return unity pass-through on invalid params
+    }
+
     const float w0 = 2.0f * static_cast<float>(M_PI) * fc / fs;
     const float cosw0 = std::cos(w0);
     const float sinw0 = std::sin(w0);
@@ -70,7 +100,6 @@ BiquadCoeffs neon_biquad_lowpass(float fc, float fs, float Q) {
     const float a0 = 1.0f + alpha;
     const float inv_a0 = 1.0f / a0;
 
-    BiquadCoeffs c;
     c.b0 = ((1.0f - cosw0) * 0.5f) * inv_a0;
     c.b1 = (1.0f - cosw0) * inv_a0;
     c.b2 = ((1.0f - cosw0) * 0.5f) * inv_a0;
@@ -80,6 +109,11 @@ BiquadCoeffs neon_biquad_lowpass(float fc, float fs, float Q) {
 }
 
 BiquadCoeffs neon_biquad_highpass(float fc, float fs, float Q) {
+    BiquadCoeffs c;
+    if (!validate_iir_params(fc, fs, Q, c)) {
+        return c;  // Return unity pass-through on invalid params
+    }
+
     const float w0 = 2.0f * static_cast<float>(M_PI) * fc / fs;
     const float cosw0 = std::cos(w0);
     const float sinw0 = std::sin(w0);
@@ -88,7 +122,6 @@ BiquadCoeffs neon_biquad_highpass(float fc, float fs, float Q) {
     const float a0 = 1.0f + alpha;
     const float inv_a0 = 1.0f / a0;
 
-    BiquadCoeffs c;
     c.b0 = ((1.0f + cosw0) * 0.5f) * inv_a0;
     c.b1 = -(1.0f + cosw0) * inv_a0;
     c.b2 = ((1.0f + cosw0) * 0.5f) * inv_a0;
@@ -98,6 +131,11 @@ BiquadCoeffs neon_biquad_highpass(float fc, float fs, float Q) {
 }
 
 BiquadCoeffs neon_biquad_bandpass(float fc, float fs, float Q) {
+    BiquadCoeffs c;
+    if (!validate_iir_params(fc, fs, Q, c)) {
+        return c;  // Return unity pass-through on invalid params
+    }
+
     const float w0 = 2.0f * static_cast<float>(M_PI) * fc / fs;
     const float cosw0 = std::cos(w0);
     const float sinw0 = std::sin(w0);
@@ -106,7 +144,6 @@ BiquadCoeffs neon_biquad_bandpass(float fc, float fs, float Q) {
     const float a0 = 1.0f + alpha;
     const float inv_a0 = 1.0f / a0;
 
-    BiquadCoeffs c;
     c.b0 = alpha * inv_a0;
     c.b1 = 0.0f;
     c.b2 = -alpha * inv_a0;
@@ -116,6 +153,11 @@ BiquadCoeffs neon_biquad_bandpass(float fc, float fs, float Q) {
 }
 
 BiquadCoeffs neon_biquad_notch(float fc, float fs, float Q) {
+    BiquadCoeffs c;
+    if (!validate_iir_params(fc, fs, Q, c)) {
+        return c;  // Return unity pass-through on invalid params
+    }
+
     const float w0 = 2.0f * static_cast<float>(M_PI) * fc / fs;
     const float cosw0 = std::cos(w0);
     const float sinw0 = std::sin(w0);
@@ -124,7 +166,6 @@ BiquadCoeffs neon_biquad_notch(float fc, float fs, float Q) {
     const float a0 = 1.0f + alpha;
     const float inv_a0 = 1.0f / a0;
 
-    BiquadCoeffs c;
     c.b0 = 1.0f * inv_a0;
     c.b1 = (-2.0f * cosw0) * inv_a0;
     c.b2 = 1.0f * inv_a0;

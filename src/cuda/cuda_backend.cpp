@@ -506,7 +506,13 @@ void PinnedBuffer<T>::allocate(size_t count) {
 #ifdef OPTMATH_USE_CUDA
     free();
     if (count > 0) {
-        cudaMallocHost(&m_data, count * sizeof(T));
+        cudaError_t err = cudaMallocHost(&m_data, count * sizeof(T));
+        if (err != cudaSuccess) {
+            std::cerr << "[CUDA] PinnedBuffer allocation failed: " << cudaGetErrorString(err) << std::endl;
+            m_data = nullptr;
+            m_size = 0;
+            return;
+        }
         m_size = count;
     }
 #endif
@@ -545,7 +551,13 @@ void UnifiedBuffer<T>::allocate(size_t count) {
 #ifdef OPTMATH_USE_CUDA
     free();
     if (count > 0) {
-        cudaMallocManaged(&m_data, count * sizeof(T));
+        cudaError_t err = cudaMallocManaged(&m_data, count * sizeof(T));
+        if (err != cudaSuccess) {
+            std::cerr << "[CUDA] UnifiedBuffer allocation failed: " << cudaGetErrorString(err) << std::endl;
+            m_data = nullptr;
+            m_size = 0;
+            return;
+        }
         m_size = count;
     }
 #endif
@@ -633,8 +645,11 @@ bool CudaFFTPlan::create_2d(size_t nx, size_t ny, bool inverse) {
 void CudaFFTPlan::execute(float* inout) {
 #ifdef OPTMATH_USE_CUDA
     if (m_valid) {
-        cufftExecC2C(m_plan, reinterpret_cast<cufftComplex*>(inout),
+        cufftResult result = cufftExecC2C(m_plan, reinterpret_cast<cufftComplex*>(inout),
                      reinterpret_cast<cufftComplex*>(inout), CUFFT_FORWARD);
+        if (result != CUFFT_SUCCESS) {
+            std::cerr << "[cuFFT] Execute failed with error: " << result << std::endl;
+        }
     }
 #endif
 }
@@ -642,9 +657,12 @@ void CudaFFTPlan::execute(float* inout) {
 void CudaFFTPlan::execute(const float* in, float* out) {
 #ifdef OPTMATH_USE_CUDA
     if (m_valid) {
-        cufftExecC2C(m_plan,
+        cufftResult result = cufftExecC2C(m_plan,
                      const_cast<cufftComplex*>(reinterpret_cast<const cufftComplex*>(in)),
                      reinterpret_cast<cufftComplex*>(out), CUFFT_FORWARD);
+        if (result != CUFFT_SUCCESS) {
+            std::cerr << "[cuFFT] Execute failed with error: " << result << std::endl;
+        }
     }
 #endif
 }

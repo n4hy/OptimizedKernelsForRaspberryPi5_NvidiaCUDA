@@ -80,13 +80,14 @@ void sve2_caf_f32(float* out_mag,
                 // shifted * conj(surv): (sr + j*si) * (vr - j*vi)
                 // Real part: sr*vr + si*vi
                 // Imag part: si*vr - sr*vi
-                vsumr = svmla_f32_z(pg, vsumr, sr, vr);    // sr*vr
-                vsumr = svmla_f32_z(pg, vsumr, si, vi);    // + si*vi
-                vsumi = svmla_f32_z(pg, vsumi, si, vr);    // si*vr
-                vsumi = svmls_f32_z(pg, vsumi, sr, vi);    // - sr*vi
+                // Use _m (merging) to preserve accumulated values in inactive lanes
+                vsumr = svmla_f32_m(pg, vsumr, sr, vr);    // sr*vr
+                vsumr = svmla_f32_m(pg, vsumr, si, vi);    // + si*vi
+                vsumi = svmla_f32_m(pg, vsumi, si, vr);    // si*vr
+                vsumi = svmls_f32_m(pg, vsumi, sr, vi);    // - sr*vi
 
                 ii += svcntw();
-            } while (svptest_first(svptrue_b32(), svwhilelt_b32(ii, max_i_u64)));
+            } while (svptest_any(svptrue_b32(), svwhilelt_b32(ii, max_i_u64)));
 
             float corr_re = svaddv_f32(svptrue_b32(), vsumr);
             float corr_im = svaddv_f32(svptrue_b32(), vsumi);
@@ -124,10 +125,11 @@ void sve2_xcorr_f32(float* out, const float* x, std::size_t nx,
 
                 svfloat32_t vx = svld1_f32(pg, xp + i);
                 svfloat32_t vy = svld1_f32(pg, yp + i);
-                vsum = svmla_f32_z(pg, vsum, vx, vy);
+                // Use _m (merging) to preserve accumulated values in inactive lanes
+                vsum = svmla_f32_m(pg, vsum, vx, vy);
 
                 i += svcntw();
-            } while (svptest_first(svptrue_b32(), svwhilelt_b32(i, len_u64)));
+            } while (svptest_any(svptrue_b32(), svwhilelt_b32(i, len_u64)));
         }
 
         out[k] = svaddv_f32(svptrue_b32(), vsum);
@@ -172,13 +174,14 @@ void sve2_xcorr_complex_f32(float* out_re, float* out_im,
                 // x * conj(y) = (xr + j*xi) * (yr - j*yi)
                 // Real: xr*yr + xi*yi
                 // Imag: xi*yr - xr*yi
-                vsumr = svmla_f32_z(pg, vsumr, xr, yr);
-                vsumr = svmla_f32_z(pg, vsumr, xi, yi);
-                vsumi = svmla_f32_z(pg, vsumi, xi, yr);
-                vsumi = svmls_f32_z(pg, vsumi, xr, yi);
+                // Use _m (merging) to preserve accumulated values in inactive lanes
+                vsumr = svmla_f32_m(pg, vsumr, xr, yr);
+                vsumr = svmla_f32_m(pg, vsumr, xi, yi);
+                vsumi = svmla_f32_m(pg, vsumi, xi, yr);
+                vsumi = svmls_f32_m(pg, vsumi, xr, yi);
 
                 i += svcntw();
-            } while (svptest_first(svptrue_b32(), svwhilelt_b32(i, len_u64)));
+            } while (svptest_any(svptrue_b32(), svwhilelt_b32(i, len_u64)));
         }
 
         out_re[k] = svaddv_f32(svptrue_b32(), vsumr);
@@ -227,16 +230,17 @@ void sve2_beamform_phase_f32(float* output_re, float* output_im,
                 // Apply phase shift: (ir + j*ii) * (cos + j*sin)
                 // Real: ir*cos - ii*sin
                 // Imag: ir*sin + ii*cos
-                otr = svmla_f32_z(pg, otr, ir, vcos);
-                otr = svmls_f32_z(pg, otr, ii, vsin);
-                oti = svmla_f32_z(pg, oti, ir, vsin);
-                oti = svmla_f32_z(pg, oti, ii, vcos);
+                // Use _m (merging) to preserve values in inactive lanes during accumulation
+                otr = svmla_f32_m(pg, otr, ir, vcos);
+                otr = svmls_f32_m(pg, otr, ii, vsin);
+                oti = svmla_f32_m(pg, oti, ir, vsin);
+                oti = svmla_f32_m(pg, oti, ii, vcos);
 
                 svst1_f32(pg, output_re + i, otr);
                 svst1_f32(pg, output_im + i, oti);
 
                 i += svcntw();
-            } while (svptest_first(svptrue_b32(), svwhilelt_b32(i, n_u64)));
+            } while (svptest_any(svptrue_b32(), svwhilelt_b32(i, n_u64)));
         }
     }
 }
@@ -258,7 +262,7 @@ void sve2_apply_window_f32(float* data, const float* window, std::size_t n) {
             svst1_f32(pg, data + i, svmul_f32_z(pg, d, w));
 
             i += svcntw();
-        } while (svptest_first(svptrue_b32(), svwhilelt_b32(i, n_u64)));
+        } while (svptest_any(svptrue_b32(), svwhilelt_b32(i, n_u64)));
     }
 }
 
@@ -283,7 +287,7 @@ void sve2_apply_window_complex_f32(float* data_re, float* data_im,
             svst1_f32(pg, data_im + i, svmul_f32_z(pg, di, w));
 
             i += svcntw();
-        } while (svptest_first(svptrue_b32(), svwhilelt_b32(i, n_u64)));
+        } while (svptest_any(svptrue_b32(), svwhilelt_b32(i, n_u64)));
     }
 }
 

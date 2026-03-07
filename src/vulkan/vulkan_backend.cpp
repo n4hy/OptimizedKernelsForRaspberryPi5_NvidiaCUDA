@@ -469,12 +469,23 @@ static void run_compute(const std::string& shaderName,
     cmdAllocInfo.commandBufferCount = 1;
 
     VkCommandBuffer commandBuffer;
-    vkAllocateCommandBuffers(device, &cmdAllocInfo, &commandBuffer);
+    result = vkAllocateCommandBuffers(device, &cmdAllocInfo, &commandBuffer);
+    if (result != VK_SUCCESS) {
+        std::cerr << "[Vulkan] Failed to allocate command buffer: " << result << std::endl;
+        vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+        throw std::runtime_error("failed to allocate command buffer");
+    }
 
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
-    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    result = vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    if (result != VK_SUCCESS) {
+        std::cerr << "[Vulkan] Failed to begin command buffer: " << result << std::endl;
+        vkFreeCommandBuffers(device, ctx.commandPool, 1, &commandBuffer);
+        vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+        throw std::runtime_error("failed to begin command buffer");
+    }
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, state.pipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, state.layout, 0, 1, &descriptorSet, 0, nullptr);
     if(pushConstSize > 0) {
@@ -491,7 +502,13 @@ static void run_compute(const std::string& shaderName,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_HOST_BIT,
                          0, 1, &memBarrier, 0, nullptr, 0, nullptr);
 
-    vkEndCommandBuffer(commandBuffer);
+    result = vkEndCommandBuffer(commandBuffer);
+    if (result != VK_SUCCESS) {
+        std::cerr << "[Vulkan] Failed to end command buffer: " << result << std::endl;
+        vkFreeCommandBuffers(device, ctx.commandPool, 1, &commandBuffer);
+        vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+        throw std::runtime_error("failed to end command buffer");
+    }
 
     // Submit and Wait
     VkSubmitInfo submitInfo{};
@@ -499,8 +516,21 @@ static void run_compute(const std::string& shaderName,
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
 
-    vkQueueSubmit(ctx.computeQueue, 1, &submitInfo, VK_NULL_HANDLE);
-    vkQueueWaitIdle(ctx.computeQueue);
+    result = vkQueueSubmit(ctx.computeQueue, 1, &submitInfo, VK_NULL_HANDLE);
+    if (result != VK_SUCCESS) {
+        std::cerr << "[Vulkan] Failed to submit queue: " << result << std::endl;
+        vkFreeCommandBuffers(device, ctx.commandPool, 1, &commandBuffer);
+        vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+        throw std::runtime_error("failed to submit queue");
+    }
+
+    result = vkQueueWaitIdle(ctx.computeQueue);
+    if (result != VK_SUCCESS) {
+        std::cerr << "[Vulkan] Queue wait failed: " << result << std::endl;
+        vkFreeCommandBuffers(device, ctx.commandPool, 1, &commandBuffer);
+        vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+        throw std::runtime_error("queue wait failed");
+    }
 
     // Cleanup Command Buffer & Descriptor Pool (Pipeline is cached)
     vkFreeCommandBuffers(device, ctx.commandPool, 1, &commandBuffer);

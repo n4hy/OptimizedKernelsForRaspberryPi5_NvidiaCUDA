@@ -39,17 +39,24 @@ inline int div_ceil(int a, int b) {
 // Window Function Kernels
 // =============================================================================
 
+// Helper to safely compute window divisor (prevent division by zero when n=1)
+__device__ __forceinline__ float safe_window_divisor(int n) {
+    return (n > 1) ? (float)(n - 1) : 1.0f;
+}
+
 __global__ void kernel_generate_hamming_f32(float* __restrict__ window, int n) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < n) {
-        window[idx] = 0.54f - 0.46f * cosf(2.0f * PI * idx / (n - 1));
+        float divisor = safe_window_divisor(n);
+        window[idx] = 0.54f - 0.46f * cosf(2.0f * PI * idx / divisor);
     }
 }
 
 __global__ void kernel_generate_hanning_f32(float* __restrict__ window, int n) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < n) {
-        window[idx] = 0.5f * (1.0f - cosf(2.0f * PI * idx / (n - 1)));
+        float divisor = safe_window_divisor(n);
+        window[idx] = 0.5f * (1.0f - cosf(2.0f * PI * idx / divisor));
     }
 }
 
@@ -59,7 +66,8 @@ __global__ void kernel_generate_blackman_f32(float* __restrict__ window, int n) 
         float a0 = 0.42f;
         float a1 = 0.5f;
         float a2 = 0.08f;
-        float x = 2.0f * PI * idx / (n - 1);
+        float divisor = safe_window_divisor(n);
+        float x = 2.0f * PI * idx / divisor;
         window[idx] = a0 - a1 * cosf(x) + a2 * cosf(2.0f * x);
     }
 }
@@ -71,7 +79,8 @@ __global__ void kernel_generate_blackman_harris_f32(float* __restrict__ window, 
         float a1 = 0.48829f;
         float a2 = 0.14128f;
         float a3 = 0.01168f;
-        float x = 2.0f * PI * idx / (n - 1);
+        float divisor = safe_window_divisor(n);
+        float x = 2.0f * PI * idx / divisor;
         window[idx] = a0 - a1 * cosf(x) + a2 * cosf(2.0f * x) - a3 * cosf(3.0f * x);
     }
 }
