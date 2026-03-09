@@ -24,28 +24,35 @@ bool is_available() {
 
 float neon_dot_f32(const float* a, const float* b, std::size_t n) {
 #ifdef OPTMATH_USE_NEON
-    float32x4_t vsum = vdupq_n_f32(0.0f);
+    // Use 4 independent accumulators to break dependency chain.
+    // A76 has 4-cycle FMA latency with 2 FMA pipelines — 4 independent
+    // accumulators allow full pipeline utilization.
+    float32x4_t vsum0 = vdupq_n_f32(0.0f);
+    float32x4_t vsum1 = vdupq_n_f32(0.0f);
+    float32x4_t vsum2 = vdupq_n_f32(0.0f);
+    float32x4_t vsum3 = vdupq_n_f32(0.0f);
     size_t i = 0;
 
-    // Unrolled loop (4x4 = 16 elements per iter could be better, but we stick to 4 per iter for simplicity)
-    // Actually, let's do 4x unroll (16 floats)
     for (; i + 15 < n; i += 16) {
         float32x4_t a0 = vld1q_f32(a + i);
         float32x4_t b0 = vld1q_f32(b + i);
-        vsum = vmlaq_f32(vsum, a0, b0);
+        vsum0 = vmlaq_f32(vsum0, a0, b0);
 
         float32x4_t a1 = vld1q_f32(a + i + 4);
         float32x4_t b1 = vld1q_f32(b + i + 4);
-        vsum = vmlaq_f32(vsum, a1, b1);
+        vsum1 = vmlaq_f32(vsum1, a1, b1);
 
         float32x4_t a2 = vld1q_f32(a + i + 8);
         float32x4_t b2 = vld1q_f32(b + i + 8);
-        vsum = vmlaq_f32(vsum, a2, b2);
+        vsum2 = vmlaq_f32(vsum2, a2, b2);
 
         float32x4_t a3 = vld1q_f32(a + i + 12);
         float32x4_t b3 = vld1q_f32(b + i + 12);
-        vsum = vmlaq_f32(vsum, a3, b3);
+        vsum3 = vmlaq_f32(vsum3, a3, b3);
     }
+
+    // Combine accumulators
+    float32x4_t vsum = vaddq_f32(vaddq_f32(vsum0, vsum1), vaddq_f32(vsum2, vsum3));
 
     // Residual blocks of 4
     for (; i + 3 < n; i += 4) {
@@ -193,16 +200,19 @@ float neon_norm_f32(const float* a, std::size_t n) {
 }
 
 float neon_reduce_sum_f32(const float* a, std::size_t n) {
-    // Sum is dot with 1.0, but faster to just accumulate
 #ifdef OPTMATH_USE_NEON
-    float32x4_t vsum = vdupq_n_f32(0.0f);
+    float32x4_t vsum0 = vdupq_n_f32(0.0f);
+    float32x4_t vsum1 = vdupq_n_f32(0.0f);
+    float32x4_t vsum2 = vdupq_n_f32(0.0f);
+    float32x4_t vsum3 = vdupq_n_f32(0.0f);
     size_t i = 0;
     for (; i + 15 < n; i += 16) {
-        vsum = vaddq_f32(vsum, vld1q_f32(a + i));
-        vsum = vaddq_f32(vsum, vld1q_f32(a + i + 4));
-        vsum = vaddq_f32(vsum, vld1q_f32(a + i + 8));
-        vsum = vaddq_f32(vsum, vld1q_f32(a + i + 12));
+        vsum0 = vaddq_f32(vsum0, vld1q_f32(a + i));
+        vsum1 = vaddq_f32(vsum1, vld1q_f32(a + i + 4));
+        vsum2 = vaddq_f32(vsum2, vld1q_f32(a + i + 8));
+        vsum3 = vaddq_f32(vsum3, vld1q_f32(a + i + 12));
     }
+    float32x4_t vsum = vaddq_f32(vaddq_f32(vsum0, vsum1), vaddq_f32(vsum2, vsum3));
     for (; i + 3 < n; i += 4) {
         vsum = vaddq_f32(vsum, vld1q_f32(a + i));
     }
@@ -522,23 +532,62 @@ void neon_fast_sin_f32(float* out, const float* in, std::size_t n) {
 }
 
 void neon_fast_cos_f32(float* out, const float* in, std::size_t n) {
-    // cos(x) = sin(x + pi/2)
+    // cos(x) = sin(x + pi/2) — inline the sin polynomial to avoid heap allocation
+    const float pi = 3.14159265358979323846f;
     const float half_pi = 1.57079632679489661923f;
+    const float inv_pi = 0.31830988618379067154f;
+
+    const float c1 = 1.0f;
+    const float c3 = -0.16666667163372039795f;
+    const float c5 = 0.00833333376795053482f;
+    const float c7 = -0.00019841269776225090f;
+    const float c9 = 0.00000275573189712526f;
 
 #ifdef OPTMATH_USE_NEON
+    float32x4_t vpi = vdupq_n_f32(pi);
     float32x4_t vhalf_pi = vdupq_n_f32(half_pi);
+    float32x4_t vinv_pi = vdupq_n_f32(inv_pi);
+    float32x4_t vc1 = vdupq_n_f32(c1);
+    float32x4_t vc3 = vdupq_n_f32(c3);
+    float32x4_t vc5 = vdupq_n_f32(c5);
+    float32x4_t vc7 = vdupq_n_f32(c7);
+    float32x4_t vc9 = vdupq_n_f32(c9);
 
-    // Process in place with offset
-    std::vector<float> temp(n);
     size_t i = 0;
     for (; i + 3 < n; i += 4) {
-        float32x4_t x = vld1q_f32(in + i);
-        vst1q_f32(temp.data() + i, vaddq_f32(x, vhalf_pi));
+        float32x4_t x = vaddq_f32(vld1q_f32(in + i), vhalf_pi);
+
+        float32x4_t k = vrndnq_f32(vmulq_f32(x, vinv_pi));
+        x = vmlsq_f32(x, k, vpi);
+
+        float32x4_t x2 = vmulq_f32(x, x);
+        float32x4_t p = vmlaq_f32(vc7, vc9, x2);
+        p = vmlaq_f32(vc5, p, x2);
+        p = vmlaq_f32(vc3, p, x2);
+        p = vmlaq_f32(vc1, p, x2);
+        p = vmulq_f32(p, x);
+
+        int32x4_t ki = vcvtq_s32_f32(k);
+        uint32x4_t odd = vtstq_s32(ki, vdupq_n_s32(1));
+        p = vbslq_f32(odd, vnegq_f32(p), p);
+
+        vst1q_f32(out + i, p);
     }
+
     for (; i < n; ++i) {
-        temp[i] = in[i] + half_pi;
+        float x = in[i] + half_pi;
+        float k = std::round(x * inv_pi);
+        x = x - k * pi;
+        float x2 = x * x;
+        float p = c9;
+        p = c7 + p * x2;
+        p = c5 + p * x2;
+        p = c3 + p * x2;
+        p = c1 + p * x2;
+        p = p * x;
+        if ((int64_t)k & 1) p = -p;
+        out[i] = p;
     }
-    neon_fast_sin_f32(out, temp.data(), n);
 #else
     for (size_t i = 0; i < n; ++i) {
         out[i] = std::cos(in[i]);
@@ -548,93 +597,158 @@ void neon_fast_cos_f32(float* out, const float* in, std::size_t n) {
 
 void neon_fast_sigmoid_f32(float* out, const float* in, std::size_t n) {
     // Fast sigmoid: 1 / (1 + exp(-x))
-    // Uses vectorized exp approximation
-    // Clamp inputs to prevent overflow: for |x| > 20, sigmoid saturates to 0 or 1
-    const float clamp_max = 20.0f;
-    const float clamp_min = -20.0f;
+    // Single-pass: inline exp(-x) computation to avoid heap allocations
+
+    const float log2e = 1.44269504088896341f;
+    const float ln2 = 0.693147180559945309f;
+    const float c0 = 1.0f, c1 = 0.693147182464599609f;
+    const float c2 = 0.240226507186889648f, c3 = 0.055504187941551208f;
+    const float c4 = 0.009618341922760010f, c5 = 0.001333355903625488f;
+    const float c6 = 0.000154034309089184f;
 
 #ifdef OPTMATH_USE_NEON
     float32x4_t vone = vdupq_n_f32(1.0f);
-    float32x4_t vclamp_max = vdupq_n_f32(clamp_max);
-    float32x4_t vclamp_min = vdupq_n_f32(clamp_min);
+    float32x4_t vlog2e = vdupq_n_f32(log2e);
+    float32x4_t vln2 = vdupq_n_f32(ln2);
+    float32x4_t vc0 = vdupq_n_f32(c0), vc1 = vdupq_n_f32(c1);
+    float32x4_t vc2 = vdupq_n_f32(c2), vc3 = vdupq_n_f32(c3);
+    float32x4_t vc4 = vdupq_n_f32(c4), vc5 = vdupq_n_f32(c5);
+    float32x4_t vc6 = vdupq_n_f32(c6);
+    float32x4_t vclamp = vdupq_n_f32(20.0f);
 
-    // Clamp and negate input for exp(-x)
-    std::vector<float> neg_x(n);
     size_t i = 0;
     for (; i + 3 < n; i += 4) {
         float32x4_t x = vld1q_f32(in + i);
-        // Clamp input to [-20, 20] to prevent overflow in exp
-        x = vminq_f32(vmaxq_f32(x, vclamp_min), vclamp_max);
-        vst1q_f32(neg_x.data() + i, vnegq_f32(x));
+        x = clamp_f32(x, vnegq_f32(vclamp), vclamp);
+
+        // Compute exp(-x) inline
+        float32x4_t neg_x = vnegq_f32(x);
+        neg_x = clamp_f32(neg_x, vdupq_n_f32(-88.0f), vdupq_n_f32(88.0f));
+
+        float32x4_t t = vmulq_f32(neg_x, vlog2e);
+        float32x4_t k = vrndnq_f32(t);
+        float32x4_t f = vmlsq_f32(neg_x, k, vln2);
+
+        float32x4_t p = vmlaq_f32(vc5, vc6, f);
+        p = vmlaq_f32(vc4, p, f);
+        p = vmlaq_f32(vc3, p, f);
+        p = vmlaq_f32(vc2, p, f);
+        p = vmlaq_f32(vc1, p, f);
+        p = vmlaq_f32(vc0, p, f);
+
+        int32x4_t ki = vcvtq_s32_f32(k);
+        ki = vaddq_s32(ki, vdupq_n_s32(127));
+        ki = vshlq_n_s32(ki, 23);
+        float32x4_t scale = vreinterpretq_f32_s32(ki);
+        float32x4_t exp_neg = vmulq_f32(p, scale);
+
+        // sigmoid = 1 / (1 + exp(-x))
+        vst1q_f32(out + i, vdivq_f32(vone, vaddq_f32(vone, exp_neg)));
     }
+
     for (; i < n; ++i) {
         float x = in[i];
-        // Clamp input
-        if (x > clamp_max) x = clamp_max;
-        if (x < clamp_min) x = clamp_min;
-        neg_x[i] = -x;
-    }
+        if (x > 20.0f) x = 20.0f;
+        if (x < -20.0f) x = -20.0f;
+        float neg = -x;
+        if (neg > 88.0f) neg = 88.0f;
+        if (neg < -88.0f) neg = -88.0f;
 
-    // Compute exp(-x)
-    std::vector<float> exp_neg_x(n);
-    neon_fast_exp_f32(exp_neg_x.data(), neg_x.data(), n);
-
-    // Compute 1 / (1 + exp(-x))
-    // Note: denominator is always >= 1.0 since exp(-x) >= 0, so no division by zero possible
-    i = 0;
-    for (; i + 3 < n; i += 4) {
-        float32x4_t e = vld1q_f32(exp_neg_x.data() + i);
-        float32x4_t denom = vaddq_f32(vone, e);
-        float32x4_t result = vdivq_f32(vone, denom);
-        vst1q_f32(out + i, result);
-    }
-    for (; i < n; ++i) {
-        out[i] = 1.0f / (1.0f + exp_neg_x[i]);
+        float t = neg * log2e;
+        float kf = std::round(t);
+        float f = neg - kf * ln2;
+        float p = c6;
+        p = c5 + p * f; p = c4 + p * f; p = c3 + p * f;
+        p = c2 + p * f; p = c1 + p * f; p = c0 + p * f;
+        int32_t ki = (int32_t)kf + 127;
+        int32_t bits = ki << 23;
+        float sc;
+        std::memcpy(&sc, &bits, sizeof(float));
+        out[i] = 1.0f / (1.0f + p * sc);
     }
 #else
     for (size_t i = 0; i < n; ++i) {
         float x = in[i];
-        // Clamp input to prevent overflow
-        if (x > clamp_max) x = clamp_max;
-        if (x < clamp_min) x = clamp_min;
+        if (x > 20.0f) x = 20.0f;
+        if (x < -20.0f) x = -20.0f;
         out[i] = 1.0f / (1.0f + std::exp(-x));
     }
 #endif
 }
 
 void neon_fast_tanh_f32(float* out, const float* in, std::size_t n) {
-    // tanh(x) = (exp(2x) - 1) / (exp(2x) + 1)
-    // Or equivalently: 2 * sigmoid(2x) - 1
+    // tanh(x) = 2*sigmoid(2x) - 1, single-pass with inline exp
+
+    const float log2e = 1.44269504088896341f;
+    const float ln2 = 0.693147180559945309f;
+    const float c0 = 1.0f, c1 = 0.693147182464599609f;
+    const float c2 = 0.240226507186889648f, c3 = 0.055504187941551208f;
+    const float c4 = 0.009618341922760010f, c5 = 0.001333355903625488f;
+    const float c6 = 0.000154034309089184f;
 
 #ifdef OPTMATH_USE_NEON
     float32x4_t vtwo = vdupq_n_f32(2.0f);
     float32x4_t vone = vdupq_n_f32(1.0f);
+    float32x4_t vlog2e = vdupq_n_f32(log2e);
+    float32x4_t vln2 = vdupq_n_f32(ln2);
+    float32x4_t vc0 = vdupq_n_f32(c0), vc1 = vdupq_n_f32(c1);
+    float32x4_t vc2 = vdupq_n_f32(c2), vc3 = vdupq_n_f32(c3);
+    float32x4_t vc4 = vdupq_n_f32(c4), vc5 = vdupq_n_f32(c5);
+    float32x4_t vc6 = vdupq_n_f32(c6);
+    float32x4_t vclamp = vdupq_n_f32(10.0f);
+    float32x4_t vmax_exp = vdupq_n_f32(88.0f);
 
-    // Compute 2x
-    std::vector<float> two_x(n);
     size_t i = 0;
     for (; i + 3 < n; i += 4) {
         float32x4_t x = vld1q_f32(in + i);
-        vst1q_f32(two_x.data() + i, vmulq_f32(vtwo, x));
-    }
-    for (; i < n; ++i) {
-        two_x[i] = 2.0f * in[i];
+        x = clamp_f32(x, vnegq_f32(vclamp), vclamp);
+
+        // Compute exp(-2x) inline
+        float32x4_t neg_2x = vnegq_f32(vmulq_f32(vtwo, x));
+        neg_2x = clamp_f32(neg_2x, vnegq_f32(vmax_exp), vmax_exp);
+
+        float32x4_t t = vmulq_f32(neg_2x, vlog2e);
+        float32x4_t k = vrndnq_f32(t);
+        float32x4_t f = vmlsq_f32(neg_2x, k, vln2);
+
+        float32x4_t p = vmlaq_f32(vc5, vc6, f);
+        p = vmlaq_f32(vc4, p, f);
+        p = vmlaq_f32(vc3, p, f);
+        p = vmlaq_f32(vc2, p, f);
+        p = vmlaq_f32(vc1, p, f);
+        p = vmlaq_f32(vc0, p, f);
+
+        int32x4_t ki = vcvtq_s32_f32(k);
+        ki = vaddq_s32(ki, vdupq_n_s32(127));
+        ki = vshlq_n_s32(ki, 23);
+        float32x4_t scale = vreinterpretq_f32_s32(ki);
+        float32x4_t exp_neg = vmulq_f32(p, scale);
+
+        // sigmoid(2x) = 1/(1+exp(-2x)), then tanh = 2*sig - 1
+        float32x4_t sig = vdivq_f32(vone, vaddq_f32(vone, exp_neg));
+        vst1q_f32(out + i, vmlaq_f32(vnegq_f32(vone), vtwo, sig));
     }
 
-    // Compute sigmoid(2x)
-    std::vector<float> sig(n);
-    neon_fast_sigmoid_f32(sig.data(), two_x.data(), n);
-
-    // Compute 2*sigmoid(2x) - 1
-    i = 0;
-    for (; i + 3 < n; i += 4) {
-        float32x4_t s = vld1q_f32(sig.data() + i);
-        // tanh(x) = 2*sigmoid(2x) - 1 = -1 + 2*s
-        float32x4_t result = vmlaq_f32(vnegq_f32(vone), vtwo, s);
-        vst1q_f32(out + i, result);
-    }
     for (; i < n; ++i) {
-        out[i] = 2.0f * sig[i] - 1.0f;
+        float x = in[i];
+        if (x > 10.0f) x = 10.0f;
+        if (x < -10.0f) x = -10.0f;
+        float neg = -2.0f * x;
+        if (neg > 88.0f) neg = 88.0f;
+        if (neg < -88.0f) neg = -88.0f;
+
+        float t = neg * log2e;
+        float kf = std::round(t);
+        float f = neg - kf * ln2;
+        float p = c6;
+        p = c5 + p * f; p = c4 + p * f; p = c3 + p * f;
+        p = c2 + p * f; p = c1 + p * f; p = c0 + p * f;
+        int32_t kk = (int32_t)kf + 127;
+        int32_t bits = kk << 23;
+        float sc;
+        std::memcpy(&sc, &bits, sizeof(float));
+        float sig = 1.0f / (1.0f + p * sc);
+        out[i] = 2.0f * sig - 1.0f;
     }
 #else
     for (size_t i = 0; i < n; ++i) {

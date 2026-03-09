@@ -365,11 +365,9 @@ void neon_complex_scale_f32(float* out_re, float* out_im,
 
 void neon_complex_exp_f32(float* out_re, float* out_im, const float* phase, std::size_t n) {
     // exp(j*phase) = cos(phase) + j*sin(phase)
-    // Using scalar for now; vectorized sin/cos can be added later
-    for (std::size_t i = 0; i < n; ++i) {
-        out_re[i] = std::cos(phase[i]);
-        out_im[i] = std::sin(phase[i]);
-    }
+    // Use vectorized fast sin/cos for NEON acceleration
+    neon_fast_cos_f32(out_re, phase, n);
+    neon_fast_sin_f32(out_im, phase, n);
 }
 
 // =========================================================================

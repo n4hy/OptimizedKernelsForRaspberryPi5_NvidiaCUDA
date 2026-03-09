@@ -45,6 +45,7 @@ alignas(64) static thread_local float packed_B[KC_MAX * NC_MAX];
 
 // 8x8 microkernel using NEON intrinsics
 // Computes C[0:8, 0:8] += A_packed[0:8, 0:KC] * B_packed[0:KC, 0:8]
+// Uses column-oriented accumulators for efficient vector store to column-major C.
 static void micro_kernel_8x8(
     size_t k,
     const float* A_packed,  // 8 x k, packed row-major in register panels
@@ -52,137 +53,64 @@ static void micro_kernel_8x8(
     float* C,
     size_t ldc) {
 
-    // Accumulator registers for 8x8 output tile
-    float32x4_t c00 = vdupq_n_f32(0.0f), c01 = vdupq_n_f32(0.0f);
-    float32x4_t c10 = vdupq_n_f32(0.0f), c11 = vdupq_n_f32(0.0f);
-    float32x4_t c20 = vdupq_n_f32(0.0f), c21 = vdupq_n_f32(0.0f);
-    float32x4_t c30 = vdupq_n_f32(0.0f), c31 = vdupq_n_f32(0.0f);
-    float32x4_t c40 = vdupq_n_f32(0.0f), c41 = vdupq_n_f32(0.0f);
-    float32x4_t c50 = vdupq_n_f32(0.0f), c51 = vdupq_n_f32(0.0f);
-    float32x4_t c60 = vdupq_n_f32(0.0f), c61 = vdupq_n_f32(0.0f);
-    float32x4_t c70 = vdupq_n_f32(0.0f), c71 = vdupq_n_f32(0.0f);
+    // Column-oriented accumulators: c_colJ_lo = C[0:3, J], c_colJ_hi = C[4:7, J]
+    // This allows contiguous vector store to column-major C.
+    float32x4_t c0_lo = vdupq_n_f32(0.0f), c0_hi = vdupq_n_f32(0.0f);
+    float32x4_t c1_lo = vdupq_n_f32(0.0f), c1_hi = vdupq_n_f32(0.0f);
+    float32x4_t c2_lo = vdupq_n_f32(0.0f), c2_hi = vdupq_n_f32(0.0f);
+    float32x4_t c3_lo = vdupq_n_f32(0.0f), c3_hi = vdupq_n_f32(0.0f);
+    float32x4_t c4_lo = vdupq_n_f32(0.0f), c4_hi = vdupq_n_f32(0.0f);
+    float32x4_t c5_lo = vdupq_n_f32(0.0f), c5_hi = vdupq_n_f32(0.0f);
+    float32x4_t c6_lo = vdupq_n_f32(0.0f), c6_hi = vdupq_n_f32(0.0f);
+    float32x4_t c7_lo = vdupq_n_f32(0.0f), c7_hi = vdupq_n_f32(0.0f);
 
     // Main loop over k dimension
     for (size_t p = 0; p < k; ++p) {
-        // Load A column (8 elements)
+        // Load A column (8 elements: rows 0-7 of A at k-index p)
         float32x4_t a0 = vld1q_f32(A_packed + p * MR);
         float32x4_t a1 = vld1q_f32(A_packed + p * MR + 4);
 
-        // Load B row (8 elements)
+        // Load B row (8 elements: cols 0-7 of B at k-index p)
         float32x4_t b0 = vld1q_f32(B_packed + p * NR);
         float32x4_t b1 = vld1q_f32(B_packed + p * NR + 4);
 
-        // Rank-1 update: C += outer(a, b)
-        // Row 0
-        c00 = vmlaq_laneq_f32(c00, b0, a0, 0);
-        c01 = vmlaq_laneq_f32(c01, b1, a0, 0);
-        // Row 1
-        c10 = vmlaq_laneq_f32(c10, b0, a0, 1);
-        c11 = vmlaq_laneq_f32(c11, b1, a0, 1);
-        // Row 2
-        c20 = vmlaq_laneq_f32(c20, b0, a0, 2);
-        c21 = vmlaq_laneq_f32(c21, b1, a0, 2);
-        // Row 3
-        c30 = vmlaq_laneq_f32(c30, b0, a0, 3);
-        c31 = vmlaq_laneq_f32(c31, b1, a0, 3);
-        // Row 4
-        c40 = vmlaq_laneq_f32(c40, b0, a1, 0);
-        c41 = vmlaq_laneq_f32(c41, b1, a1, 0);
-        // Row 5
-        c50 = vmlaq_laneq_f32(c50, b0, a1, 1);
-        c51 = vmlaq_laneq_f32(c51, b1, a1, 1);
-        // Row 6
-        c60 = vmlaq_laneq_f32(c60, b0, a1, 2);
-        c61 = vmlaq_laneq_f32(c61, b1, a1, 2);
-        // Row 7
-        c70 = vmlaq_laneq_f32(c70, b0, a1, 3);
-        c71 = vmlaq_laneq_f32(c71, b1, a1, 3);
+        // Rank-1 update by columns: C[:,j] += A[:,p] * B[p,j]
+        // Column 0-3 (elements from b0)
+        c0_lo = vmlaq_laneq_f32(c0_lo, a0, b0, 0);
+        c0_hi = vmlaq_laneq_f32(c0_hi, a1, b0, 0);
+        c1_lo = vmlaq_laneq_f32(c1_lo, a0, b0, 1);
+        c1_hi = vmlaq_laneq_f32(c1_hi, a1, b0, 1);
+        c2_lo = vmlaq_laneq_f32(c2_lo, a0, b0, 2);
+        c2_hi = vmlaq_laneq_f32(c2_hi, a1, b0, 2);
+        c3_lo = vmlaq_laneq_f32(c3_lo, a0, b0, 3);
+        c3_hi = vmlaq_laneq_f32(c3_hi, a1, b0, 3);
+        // Column 4-7 (elements from b1)
+        c4_lo = vmlaq_laneq_f32(c4_lo, a0, b1, 0);
+        c4_hi = vmlaq_laneq_f32(c4_hi, a1, b1, 0);
+        c5_lo = vmlaq_laneq_f32(c5_lo, a0, b1, 1);
+        c5_hi = vmlaq_laneq_f32(c5_hi, a1, b1, 1);
+        c6_lo = vmlaq_laneq_f32(c6_lo, a0, b1, 2);
+        c6_hi = vmlaq_laneq_f32(c6_hi, a1, b1, 2);
+        c7_lo = vmlaq_laneq_f32(c7_lo, a0, b1, 3);
+        c7_hi = vmlaq_laneq_f32(c7_hi, a1, b1, 3);
     }
 
-    // Store results (add to existing C values)
-    // C is column-major: C[row, col] = C[row + col * ldc]
-    // Each c_ij register holds row i's results for cols 0-3 (c_i0) and 4-7 (c_i1)
-    // Must scatter-store since columns are strided in memory.
+    // Store results with vector load+add+store (16 vector ops vs 64 scalar)
+    // C is column-major: column j starts at C + j*ldc, contiguous for 8 rows
+    #define STORE_COL(j, lo, hi) \
+        vst1q_f32(C + (j)*ldc,     vaddq_f32(vld1q_f32(C + (j)*ldc),     lo)); \
+        vst1q_f32(C + (j)*ldc + 4, vaddq_f32(vld1q_f32(C + (j)*ldc + 4), hi));
 
-    // Store row 0
-    C[0 + 0*ldc] += vgetq_lane_f32(c00, 0);
-    C[0 + 1*ldc] += vgetq_lane_f32(c00, 1);
-    C[0 + 2*ldc] += vgetq_lane_f32(c00, 2);
-    C[0 + 3*ldc] += vgetq_lane_f32(c00, 3);
-    C[0 + 4*ldc] += vgetq_lane_f32(c01, 0);
-    C[0 + 5*ldc] += vgetq_lane_f32(c01, 1);
-    C[0 + 6*ldc] += vgetq_lane_f32(c01, 2);
-    C[0 + 7*ldc] += vgetq_lane_f32(c01, 3);
+    STORE_COL(0, c0_lo, c0_hi);
+    STORE_COL(1, c1_lo, c1_hi);
+    STORE_COL(2, c2_lo, c2_hi);
+    STORE_COL(3, c3_lo, c3_hi);
+    STORE_COL(4, c4_lo, c4_hi);
+    STORE_COL(5, c5_lo, c5_hi);
+    STORE_COL(6, c6_lo, c6_hi);
+    STORE_COL(7, c7_lo, c7_hi);
 
-    // Store row 1
-    C[1 + 0*ldc] += vgetq_lane_f32(c10, 0);
-    C[1 + 1*ldc] += vgetq_lane_f32(c10, 1);
-    C[1 + 2*ldc] += vgetq_lane_f32(c10, 2);
-    C[1 + 3*ldc] += vgetq_lane_f32(c10, 3);
-    C[1 + 4*ldc] += vgetq_lane_f32(c11, 0);
-    C[1 + 5*ldc] += vgetq_lane_f32(c11, 1);
-    C[1 + 6*ldc] += vgetq_lane_f32(c11, 2);
-    C[1 + 7*ldc] += vgetq_lane_f32(c11, 3);
-
-    // Store row 2
-    C[2 + 0*ldc] += vgetq_lane_f32(c20, 0);
-    C[2 + 1*ldc] += vgetq_lane_f32(c20, 1);
-    C[2 + 2*ldc] += vgetq_lane_f32(c20, 2);
-    C[2 + 3*ldc] += vgetq_lane_f32(c20, 3);
-    C[2 + 4*ldc] += vgetq_lane_f32(c21, 0);
-    C[2 + 5*ldc] += vgetq_lane_f32(c21, 1);
-    C[2 + 6*ldc] += vgetq_lane_f32(c21, 2);
-    C[2 + 7*ldc] += vgetq_lane_f32(c21, 3);
-
-    // Store row 3
-    C[3 + 0*ldc] += vgetq_lane_f32(c30, 0);
-    C[3 + 1*ldc] += vgetq_lane_f32(c30, 1);
-    C[3 + 2*ldc] += vgetq_lane_f32(c30, 2);
-    C[3 + 3*ldc] += vgetq_lane_f32(c30, 3);
-    C[3 + 4*ldc] += vgetq_lane_f32(c31, 0);
-    C[3 + 5*ldc] += vgetq_lane_f32(c31, 1);
-    C[3 + 6*ldc] += vgetq_lane_f32(c31, 2);
-    C[3 + 7*ldc] += vgetq_lane_f32(c31, 3);
-
-    // Store row 4
-    C[4 + 0*ldc] += vgetq_lane_f32(c40, 0);
-    C[4 + 1*ldc] += vgetq_lane_f32(c40, 1);
-    C[4 + 2*ldc] += vgetq_lane_f32(c40, 2);
-    C[4 + 3*ldc] += vgetq_lane_f32(c40, 3);
-    C[4 + 4*ldc] += vgetq_lane_f32(c41, 0);
-    C[4 + 5*ldc] += vgetq_lane_f32(c41, 1);
-    C[4 + 6*ldc] += vgetq_lane_f32(c41, 2);
-    C[4 + 7*ldc] += vgetq_lane_f32(c41, 3);
-
-    // Store row 5
-    C[5 + 0*ldc] += vgetq_lane_f32(c50, 0);
-    C[5 + 1*ldc] += vgetq_lane_f32(c50, 1);
-    C[5 + 2*ldc] += vgetq_lane_f32(c50, 2);
-    C[5 + 3*ldc] += vgetq_lane_f32(c50, 3);
-    C[5 + 4*ldc] += vgetq_lane_f32(c51, 0);
-    C[5 + 5*ldc] += vgetq_lane_f32(c51, 1);
-    C[5 + 6*ldc] += vgetq_lane_f32(c51, 2);
-    C[5 + 7*ldc] += vgetq_lane_f32(c51, 3);
-
-    // Store row 6
-    C[6 + 0*ldc] += vgetq_lane_f32(c60, 0);
-    C[6 + 1*ldc] += vgetq_lane_f32(c60, 1);
-    C[6 + 2*ldc] += vgetq_lane_f32(c60, 2);
-    C[6 + 3*ldc] += vgetq_lane_f32(c60, 3);
-    C[6 + 4*ldc] += vgetq_lane_f32(c61, 0);
-    C[6 + 5*ldc] += vgetq_lane_f32(c61, 1);
-    C[6 + 6*ldc] += vgetq_lane_f32(c61, 2);
-    C[6 + 7*ldc] += vgetq_lane_f32(c61, 3);
-
-    // Store row 7
-    C[7 + 0*ldc] += vgetq_lane_f32(c70, 0);
-    C[7 + 1*ldc] += vgetq_lane_f32(c70, 1);
-    C[7 + 2*ldc] += vgetq_lane_f32(c70, 2);
-    C[7 + 3*ldc] += vgetq_lane_f32(c70, 3);
-    C[7 + 4*ldc] += vgetq_lane_f32(c71, 0);
-    C[7 + 5*ldc] += vgetq_lane_f32(c71, 1);
-    C[7 + 6*ldc] += vgetq_lane_f32(c71, 2);
-    C[7 + 7*ldc] += vgetq_lane_f32(c71, 3);
+    #undef STORE_COL
 }
 
 // Pack a panel of A for the microkernel
@@ -325,16 +253,21 @@ void neon_gemm_blocked_f32(
 #endif
 }
 
-// Eigen wrapper for optimized blocked GEMM
-// Note: The 8x8 microkernel has subtle bugs causing large errors.
-// For now, delegate to the working 4x4-tiled neon_gemm() implementation.
+// Eigen wrapper for optimized blocked GEMM with 8x8 microkernel
 Eigen::MatrixXf neon_gemm_blocked(const Eigen::MatrixXf& A, const Eigen::MatrixXf& B) {
     if (A.cols() != B.rows()) {
         return Eigen::MatrixXf();
     }
 
-    // Delegate to the working neon_gemm() implementation
-    return neon_gemm(A, B);
+    Eigen::MatrixXf C = Eigen::MatrixXf::Zero(A.rows(), B.cols());
+    neon_gemm_blocked_f32(C.data(), A.data(), B.data(),
+                           static_cast<size_t>(A.rows()),
+                           static_cast<size_t>(B.cols()),
+                           static_cast<size_t>(A.cols()),
+                           static_cast<size_t>(A.outerStride()),
+                           static_cast<size_t>(B.outerStride()),
+                           static_cast<size_t>(C.outerStride()));
+    return C;
 }
 
 } // namespace neon
