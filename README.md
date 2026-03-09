@@ -418,11 +418,11 @@ make -j$(nproc)
 | `ENABLE_FCMA` | ON | Enable FCMA complex multiply |
 | `ENABLE_I8MM` | ON | Enable I8MM int8 matrix multiply |
 | `ENABLE_VULKAN` | ON | Enable Vulkan compute |
-| `ENABLE_CUDA` | OFF | Enable NVIDIA CUDA |
-| `CMAKE_CUDA_ARCHITECTURES` | 75;86;89 | CUDA compute capabilities |
+| `ENABLE_CUDA` | ON | Enable NVIDIA CUDA |
+| `CMAKE_CUDA_ARCHITECTURES` | 75;80;86;89;100 | CUDA compute capabilities |
 | `BUILD_TESTS` | ON | Build GoogleTest tests |
 | `BUILD_BENCHMARKS` | OFF | Build Google Benchmark |
-| `CMAKE_POSITION_INDEPENDENT_CODE` | OFF | Enable -fPIC (required for shared libs) |
+| `CMAKE_POSITION_INDEPENDENT_CODE` | ON | Enable -fPIC (set globally) |
 
 #### 3. Run Tests
 ```bash
@@ -446,7 +446,7 @@ ls /usr/local/lib/cmake/OptMathKernels/
 
 ## API Reference
 
-For complete API documentation of all **490+ functions**, see:
+For complete API documentation of all **473 functions**, see:
 
 **[FunctionsIncluded.md](FunctionsIncluded.md)** - Complete API Reference
 
@@ -823,68 +823,68 @@ Tested on CIX P1 CD8160 (12x cores: 8x Cortex-A720 + 4x Cortex-A520) @ 2.6 GHz, 
 
 | Benchmark | Size | Time | FLOPS | Notes |
 |-----------|------|------|-------|-------|
-| **NEON GEMM 4x4** | 16 | 28.9 ns | 17.7 GFLOPS | Micro-kernel |
-| **NEON GEMM 4x4** | 128 | 236 ns | 17.4 GFLOPS | L1-resident |
-| **NEON GEMM 4x4** | 1024 | 1.84 μs | 17.8 GFLOPS | Streaming |
-| **NEON GEMM Blocked** | 32 | 4.32 μs | 15.2 GFLOPS | Cache-blocked |
-| **NEON GEMM Blocked** | 256 | 3.10 ms | 10.8 GFLOPS | L3-resident |
-| **NEON GEMM Blocked** | 512 | 28.0 ms | 9.57 GFLOPS | Beyond L3 |
-| **Eigen GEMM** | 32 | 2.17 μs | 30.3 GFLOPS | Reference |
-| **Eigen GEMM** | 256 | 880 μs | 38.1 GFLOPS | Highly optimized |
-| **Eigen GEMM** | 512 | 6.85 ms | 39.2 GFLOPS | AVX-class perf |
-| **NEON MatVec** | 1024 | 211 μs | 9.93 GFLOPS | Matrix-vector |
-| **NEON MatVec** | 2048 | 831 μs | 10.1 GFLOPS | Large |
+| **NEON GEMM 4x4** | 16 | 30.0 ns | 17.1 GFLOPS | Micro-kernel |
+| **NEON GEMM 4x4** | 128 | 245 ns | 16.7 GFLOPS | L1-resident |
+| **NEON GEMM 4x4** | 1024 | 1.91 μs | 17.1 GFLOPS | Streaming |
+| **NEON GEMM Blocked** | 32 | 4.48 μs | 14.6 GFLOPS | Cache-blocked |
+| **NEON GEMM Blocked** | 256 | 2.87 ms | 11.7 GFLOPS | L3-resident |
+| **NEON GEMM Blocked** | 512 | 29.9 ms | 9.01 GFLOPS | Beyond L3 |
+| **Eigen GEMM** | 32 | 2.25 μs | 29.1 GFLOPS | Reference |
+| **Eigen GEMM** | 256 | 919 μs | 36.6 GFLOPS | Highly optimized |
+| **Eigen GEMM** | 512 | 7.14 ms | 37.7 GFLOPS | AVX-class perf |
+| **NEON MatVec** | 1024 | 220 μs | 9.55 GFLOPS | Matrix-vector |
+| **NEON MatVec** | 2048 | 867 μs | 9.71 GFLOPS | Large |
 
 #### NEON Transcendentals (Speedup vs std:: scalar)
 
 | Function | Size | NEON FLOPS | std:: FLOPS | Speedup |
 |----------|------|-----------|-------------|---------|
-| **exp** | 1M | 8.53 GFLOPS | 261 MFLOPS | **32.7x** |
-| **sin** | 1M | 8.53 GFLOPS | 228 MFLOPS | **37.4x** |
-| **cos** | 1M | 7.42 GFLOPS | — | ~33x |
-| **sigmoid** | 256K | 8.10 GFLOPS | 408 MFLOPS | **19.9x** |
-| **tanh** | 256K | 8.65 GFLOPS | 73.8 MFLOPS | **117x** |
+| **exp** | 1M | 8.55 GFLOPS | 261 MFLOPS | **32.8x** |
+| **sin** | 1M | 8.55 GFLOPS | 228 MFLOPS | **37.5x** |
+| **cos** | 1M | 7.41 GFLOPS | — | ~33x |
+| **sigmoid** | 256K | 8.09 GFLOPS | 408 MFLOPS | **19.8x** |
+| **tanh** | 256K | 8.66 GFLOPS | 73.8 MFLOPS | **117x** |
 | **ReLU** | 1M | 34.2 GB/s | — | Memory-bound |
 
 #### NEON DSP (Signal Processing)
 
 | Benchmark | Size | Time | Throughput |
 |-----------|------|------|------------|
-| **FIR Filter** | 16K samples, 64 taps | 186 μs | 11.2 GFLOPS |
-| **FIR Filter** | 64K samples, 128 taps | 1.59 ms | 10.5 GFLOPS |
-| **Cross-Correlation** | 4096 | 3.79 ms | 8.85 GFLOPS |
-| **Complex Multiply** | 4096 | 8.46 μs | 2.91 GFLOPS |
-| **Complex Magnitude** | 64K | 90.2 μs | 2.91 GFLOPS |
-| **Dot Product (NEON)** | 256K | 61.0 μs | 8.60 GFLOPS |
+| **FIR Filter** | 16K samples, 64 taps | 179 μs | 11.7 GFLOPS |
+| **FIR Filter** | 64K samples, 128 taps | 1.53 ms | 10.9 GFLOPS |
+| **Cross-Correlation** | 4096 | 3.65 ms | 9.18 GFLOPS |
+| **Complex Multiply** | 4096 | 8.08 μs | 3.04 GFLOPS |
+| **Complex Magnitude** | 64K | 87.5 μs | 3.00 GFLOPS |
+| **Dot Product (NEON)** | 256K | 60.9 μs | 8.62 GFLOPS |
 | **Dot Product (Eigen)** | 256K | 48.0 μs | 10.9 GFLOPS |
 
 #### Vulkan GPU (Mali-G720-Immortalis)
 
 | Benchmark | Size | Wall Time | GPU FLOPS | Notes |
 |-----------|------|-----------|-----------|-------|
-| **Matrix Multiply** | 64x64 | 226 μs | 5.59 GFLOPS | Setup overhead |
-| **Matrix Multiply** | 256x256 | 1.23 ms | 108 GFLOPS | Tiled 32x32 |
-| **Matrix Multiply** | 512x512 | 7.27 ms | 229 GFLOPS | Sweet spot |
-| **Matrix Multiply** | 1024x1024 | 51.0 ms | **481 GFLOPS** | Peak compute |
-| **Vec Add** | 1M | 3.44 ms | 5.07 GB/s | Memory-bound |
-| **Vec Add** | 4M | 14.7 ms | 4.39 GB/s | Large transfer |
+| **Matrix Multiply** | 64x64 | 228 μs | 5.54 GFLOPS | Setup overhead |
+| **Matrix Multiply** | 256x256 | 1.19 ms | 108 GFLOPS | Tiled 32x32 |
+| **Matrix Multiply** | 512x512 | 7.07 ms | 274 GFLOPS | Sweet spot |
+| **Matrix Multiply** | 1024x1024 | 51.2 ms | **481 GFLOPS** | Peak compute |
+| **Vec Add** | 1M | 3.06 ms | 5.98 GB/s | Memory-bound |
+| **Vec Add** | 4M | 15.0 ms | 4.27 GB/s | Large transfer |
 
 #### Radar Signal Processing
 
 | Benchmark | Parameters | Time | FLOPS |
 |-----------|-----------|------|-------|
-| **CAF** | 4096 samples, 41 Doppler, 100 range | 10.3 ms | 16.3 GFLOPS |
-| **CAF** | 16384 samples, 61 Doppler, 200 range | 114 ms | 17.6 GFLOPS |
-| **CAF** | 65536 samples, 101 Doppler, 500 range | 1.88 s | 17.7 GFLOPS |
-| **CFAR CA 1D** | 64K samples | 7.07 ms | 1.19 GFLOPS |
-| **CFAR 2D** | 256x512 range-Doppler | 34.9 ms | 241 MFLOPS |
-| **CFAR 2D** | 512x1024 range-Doppler | 140 ms | 239 MFLOPS |
-| **NLMS Filter** | 64K samples, 64 taps | 4.23 ms | 3.97 GFLOPS |
-| **NLMS Filter** | 256K samples, 128 taps | 33.5 ms | 4.01 GFLOPS |
-| **MTI Filter** | 256 pulses x 2048 range | 2.60 ms | 1.21 GFLOPS |
-| **Beamform (Phase)** | 8 elements, 16K samples | 271 μs | 3.88 GFLOPS |
-| **Beamform (Delay-Sum)** | 16 elements, 64K samples | 2.67 ms | 788 MFLOPS |
-| **Steering Vector** | 64 elements | 19.9 μs | 99.9 M items/s |
+| **CAF** | 4096 samples, 41 Doppler, 100 range | 9.94 ms | 17.0 GFLOPS |
+| **CAF** | 16384 samples, 61 Doppler, 200 range | 110 ms | 18.3 GFLOPS |
+| **CAF** | 65536 samples, 101 Doppler, 500 range | 1.82 s | 18.2 GFLOPS |
+| **CFAR CA 1D** | 64K samples | 6.81 ms | 1.23 GFLOPS |
+| **CFAR 2D** | 256x512 range-Doppler | 34.0 ms | 247 MFLOPS |
+| **CFAR 2D** | 512x1024 range-Doppler | 137 ms | 246 MFLOPS |
+| **NLMS Filter** | 64K samples, 64 taps | 4.07 ms | 4.12 GFLOPS |
+| **NLMS Filter** | 256K samples, 128 taps | 32.2 ms | 4.17 GFLOPS |
+| **MTI Filter** | 256 pulses x 2048 range | 2.55 ms | 1.22 GFLOPS |
+| **Beamform (Phase)** | 8 elements, 16K samples | 267 μs | 3.92 GFLOPS |
+| **Beamform (Delay-Sum)** | 16 elements, 64K samples | 2.63 ms | 801 MFLOPS |
+| **Steering Vector** | 64 elements | 19.1 μs | 104 M items/s |
 
 #### Demo Application Output
 
@@ -895,19 +895,19 @@ NEON: Available
 Vulkan: Available (GPU initialized) — Mali-G720-Immortalis
 
 --- Dot Product ---
-Eigen (CPU): 0.287 ms, Result: -95.2917
-NEON       : 0.278 ms, Result: -95.2971 (Diff: 0.005)
-Vulkan     : 12.4 ms,  Result: -95.2891 (Diff: 0.003)
+Eigen (CPU): 0.303 ms, Result: -95.2917
+NEON       : 0.289 ms, Result: -95.2971 (Diff: 0.005)
+Vulkan     : 15.5 ms,  Result: -95.2891 (Diff: 0.003)
 
 --- Vector Addition ---
 Eigen (CPU): 1.59 ms
-NEON       : 1.40 ms, Norm Diff: 0
-Vulkan     : 7.71 ms, Norm Diff: 0
+NEON       : 1.61 ms, Norm Diff: 0
+Vulkan     : 7.79 ms, Norm Diff: 0
 
 --- FIR Filter (Small Input) ---
-Naive CPU  : 0.858 ms
-NEON       : 0.243 ms, Norm Diff: 8.16e-05 (3.5x speedup)
-Vulkan     : 6.84 ms,  Norm Diff: 8.16e-05
+Naive CPU  : 0.910 ms
+NEON       : 0.242 ms, Norm Diff: 8.16e-05 (3.8x speedup)
+Vulkan     : 7.12 ms,  Norm Diff: 8.16e-05
 ```
 
 #### Test Results (Orange Pi 6 Plus — 16/16 Suites Pass)
@@ -1017,7 +1017,7 @@ nvidia-smi
 ```
 OptMathKernels/
 ├── include/optmath/
-│   ├── neon_kernels.hpp      # NEON API declarations (124 functions)
+│   ├── neon_kernels.hpp      # NEON API declarations (104 functions)
 │   ├── sve2_kernels.hpp      # SVE2/FCMA/I8MM API declarations (46 functions)
 │   ├── platform.hpp          # Platform detection, thread affinity (10 functions)
 │   ├── vulkan_backend.hpp    # Vulkan API declarations (23 functions)
@@ -1083,7 +1083,7 @@ OptMathKernels/
 │   └── cuda_demo.cpp               # CUDA demo
 ├── cmake/
 │   └── OptMathKernelsConfig.cmake.in  # CMake package config
-├── FunctionsIncluded.md            # Complete API reference (417+ functions)
+├── FunctionsIncluded.md            # Complete API reference (473 functions)
 └── README.md                       # This file
 ```
 
@@ -1151,10 +1151,10 @@ OptMathKernels/
 
 **Benchmark Results Added:**
 - Complete Orange Pi 6 Plus benchmark results for all 5 benchmark suites
-- NEON GEMM: 17.8 GFLOPS (4x4 micro-kernel), Eigen reference: 39.2 GFLOPS
-- NEON transcendentals: exp 32.7x, sin 37.4x, tanh 117x faster than std::
+- NEON GEMM: 17.1 GFLOPS (4x4 micro-kernel), Eigen reference: 37.7 GFLOPS
+- NEON transcendentals: exp 32.8x, sin 37.5x, tanh 117x faster than std::
 - Vulkan MatMul on Mali-G720: 481 GFLOPS peak at 1024x1024
-- Radar CAF: 17.7 GFLOPS sustained for 65K-sample processing
+- Radar CAF: 18.2 GFLOPS sustained for 65K-sample processing
 
 **All 16 test suites pass (100%) on Orange Pi 6 Plus.**
 
