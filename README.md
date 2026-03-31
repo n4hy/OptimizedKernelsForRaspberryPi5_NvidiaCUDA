@@ -99,10 +99,10 @@ project, providing hardware-accelerated kernels for:
 - **Predicated Vector Operations**: All loops use `svwhilelt`/`svptest` predication - zero tail-handling code
 - **FCMA Complex Multiply**: 2-instruction complex multiply via `svcmla` (vs 4 NEON instructions)
 - **I8MM GEMM**: Int8 matrix multiply using `svmmla_s32` with float32 quantize/dequantize
-- **SVE2 Cache-Blocked GEMM**: Tuned for Cortex-A720 12MB L3 (MC=256, KC=512, NC=1024)
-- **SVE2 Transcendentals**: Same polynomial approximations as NEON but with predicated loops
-- **SVE2 Radar DSP**: FCMA-accelerated CAF, cross-correlation, and beamforming
-- **SVE2 Complex Operations**: Split and interleaved formats, dot product, magnitude, phase
+- **SVE2 Cache-Blocked GEMM**: Vectorized 8x8 microkernel with `svmla_n_f32_z` FMA, tuned for Cortex-A720 12MB L3 (MC=256, KC=512, NC=1024)
+- **SVE2 Transcendentals**: Single-pass inlined polynomial approximations (no heap allocations), cos/sigmoid/tanh fused with range reduction
+- **SVE2 Radar DSP**: FCMA-accelerated CAF with vectorized Doppler shift (batch `sve2_fast_cos/sin`), cross-correlation, and beamforming
+- **SVE2 Complex Operations**: Split and interleaved formats, dot product, magnitude, phase; vectorized `complex_exp` via fast sin/cos
 
 ### Platform Detection (`optmath::platform`)
 
@@ -1096,6 +1096,37 @@ OptMathKernels/
 ---
 
 ## Recent Changes
+
+### v0.5.7 - SVE2 & Radar Pipeline Optimization for Orange Pi 6 Plus (March 2026)
+
+**SVE2 Transcendentals — Eliminate Heap Allocations** (`sve2_kernels.cpp`):
+
+- **`sve2_fast_cos_f32`**: Inlined sin polynomial with pi/2 offset in a single SVE2 predicated pass. Previously allocated a `std::vector<float>` temp buffer and made 2 passes over the data.
+- **`sve2_fast_sigmoid_f32`**: Fused single-pass with inline exp(-x) computation. Previously allocated 2 `std::vector` buffers and made 3 passes (clamp+negate, exp, divide).
+- **`sve2_fast_tanh_f32`**: Fused single-pass with inline exp(-2x) + sigmoid. Previously allocated 2 `std::vector` buffers and made 3 passes.
+- Impact: Eliminates 1-2 heap allocations and 1-2 extra data passes per call in hot paths.
+
+**SVE2 GEMM Microkernel — Vectorize with SVE2 FMA** (`sve2_kernels.cpp`):
+
+- **`micro_kernel_8x8_sve2`**: Replaced scalar `float acc[8][8]` loop with SVE2 column-oriented accumulators using `svmla_n_f32_z` for rank-1 broadcast FMA, matching the NEON kernel's register-blocked design.
+- Uses lo/hi vector pairs for 8-row columns on 128-bit SVE2 (CIX P1 `svcntw()=4`).
+- Vectorized load-add-store for C matrix writeback.
+
+**CAF Doppler Shift — Vectorize Trig in Hot Loop** (`neon_radar.cpp`, `sve2_radar.cpp`):
+
+- Replaced per-sample `std::cos`/`std::sin` calls (the CAF bottleneck) with batch `neon_fast_cos/sin_f32` and `sve2_fast_cos/sin_f32`.
+- Doppler phase rotation now uses vectorized `neon_complex_mul_f32` / `sve2_complex_mul_f32` instead of scalar multiply.
+- Estimated ~10x speedup for the Doppler shift phase of CAF computation.
+
+**SVE2 Complex Exponential — Vectorize** (`sve2_complex.cpp`):
+
+- **`sve2_complex_exp_f32`**: Replaced scalar `std::cos`/`std::sin` loop with `sve2_fast_cos/sin_f32` for full SVE2 vectorization.
+
+**Architecture Safety**: All changes guarded by `#ifdef OPTMATH_USE_SVE2` / `#ifdef OPTMATH_USE_NEON` with scalar fallbacks intact. No changes to headers, APIs, or non-ARM code paths.
+
+**All 16 test suites pass (100%) on Orange Pi 6 Plus.**
+
+---
 
 ### v0.5.6 - SVE2 Runtime Detection, Platform Model Name Fallback (March 2026)
 

@@ -2,9 +2,9 @@
 
 Complete API documentation for OptMathKernels - High-Performance Numerical Library for Raspberry Pi 5 and NVIDIA GPUs.
 
-**Version**: 1.0.0
-**Total Functions**: 417+
-**Backends**: NEON (ARM), CUDA (NVIDIA), Vulkan (Cross-platform)
+**Version**: 0.5.7
+**Total Functions**: 473+
+**Backends**: NEON (ARM), SVE2 (ARMv9), CUDA (NVIDIA), Vulkan (Cross-platform), Radar (Signal Processing), Platform (Detection)
 
 ---
 
@@ -62,13 +62,12 @@ Returns `true` if NEON acceleration was compiled in and is available.
 | Function | Return Type | Parameters | Description |
 |----------|-------------|------------|-------------|
 | `neon_gemm_4x4_f32` | `void` | `float* C, const float* A, std::size_t lda, const float* B, std::size_t ldb, std::size_t ldc` | 4x4 GEMM microkernel: `C += A * B` |
-| `neon_gemm_blocked_f32` | `void` | `float* C, const float* A, const float* B, std::size_t M, std::size_t N, std::size_t K, std::size_t lda, std::size_t ldb, std::size_t ldc` | Cache-blocked GEMM (MC=128, KC=256, NC=512) |
+| `neon_gemm_blocked_f32` | `void` | `float* C, const float* A, const float* B, std::size_t M, std::size_t N, std::size_t K, std::size_t lda, std::size_t ldb, std::size_t ldc` | Cache-blocked GEMM (runtime-tuned MC/KC/NC) |
 
-**Cache Blocking Parameters** (optimized for Cortex-A76):
-- MC = 128 (rows of A per block)
-- KC = 256 (columns of A / rows of B per block)
-- NC = 512 (columns of B per block)
-- 8x8 microkernel with 4x4 register tiles
+**Cache Blocking Parameters** (auto-tuned per detected L3 cache):
+- Cortex-A76 (Pi 5, 2MB L3): MC=128, KC=256, NC=512
+- Cortex-A720 (Orange Pi 6+, 12MB L3): MC=256, KC=512, NC=1024
+- 8x8 microkernel with column-oriented NEON FMA accumulators
 
 ---
 

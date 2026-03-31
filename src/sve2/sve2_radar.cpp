@@ -30,25 +30,29 @@ void sve2_caf_f32(float* out_mag,
 
     const float two_pi = 6.28318530717958647693f;
 
-    // Temporary buffers for Doppler-shifted reference
+    // Temporary buffers for Doppler-shifted reference and phase computation
     std::vector<float> shifted_re(n_samples);
     std::vector<float> shifted_im(n_samples);
+    std::vector<float> phase_buf(n_samples);
+    std::vector<float> cos_buf(n_samples);
+    std::vector<float> sin_buf(n_samples);
 
     for (std::size_t d = 0; d < n_doppler_bins; ++d) {
         float doppler_freq = doppler_start + d * doppler_step;
         float phase_step = two_pi * doppler_freq / sample_rate;
 
-        // Apply Doppler shift to reference signal
-        // shifted = ref * exp(j * 2 * pi * fd * t)
+        // Build phase vector and compute cos/sin via fast SVE2 approximations
         for (std::size_t i = 0; i < n_samples; ++i) {
-            float phase = phase_step * i;
-            float cos_p = std::cos(phase);
-            float sin_p = std::sin(phase);
-
-            // Complex multiply: ref * exp(j*phase)
-            shifted_re[i] = ref_re[i] * cos_p - ref_im[i] * sin_p;
-            shifted_im[i] = ref_re[i] * sin_p + ref_im[i] * cos_p;
+            phase_buf[i] = phase_step * i;
         }
+        sve2_fast_cos_f32(cos_buf.data(), phase_buf.data(), n_samples);
+        sve2_fast_sin_f32(sin_buf.data(), phase_buf.data(), n_samples);
+
+        // Apply Doppler shift: shifted = ref * exp(j * phase)
+        sve2_complex_mul_f32(shifted_re.data(), shifted_im.data(),
+                             ref_re, ref_im,
+                             cos_buf.data(), sin_buf.data(),
+                             n_samples);
 
         // Cross-correlate shifted reference with surveillance for each range bin
         for (std::size_t r = 0; r < n_range_bins; ++r) {

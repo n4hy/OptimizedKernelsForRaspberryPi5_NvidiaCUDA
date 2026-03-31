@@ -364,13 +364,10 @@ void sve2_complex_scale_f32(float* out_re, float* out_im,
 void sve2_complex_exp_f32(float* out_re, float* out_im,
                            const float* phase, std::size_t n) {
     // exp(j*phase) = cos(phase) + j*sin(phase)
-    // Using scalar cos/sin for now; vectorized sin/cos approximations
-    // can be substituted once accuracy requirements are defined.
+    // Use fast SVE2 vectorized sin/cos for the A720 pipeline
 #ifdef OPTMATH_USE_SVE2
-    for (std::size_t i = 0; i < n; ++i) {
-        out_re[i] = std::cos(phase[i]);
-        out_im[i] = std::sin(phase[i]);
-    }
+    sve2_fast_cos_f32(out_re, phase, n);
+    sve2_fast_sin_f32(out_im, phase, n);
 #else
     neon::neon_complex_exp_f32(out_re, out_im, phase, n);
 #endif

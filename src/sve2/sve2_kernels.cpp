@@ -311,24 +311,53 @@ void sve2_fast_sin_f32(float* out, const float* in, std::size_t n) {
 
 void sve2_fast_cos_f32(float* out, const float* in, std::size_t n) {
 #ifdef OPTMATH_USE_SVE2
-    // cos(x) = sin(x + pi/2)
+    // cos(x) = sin(x + pi/2) — inline the sin polynomial to avoid heap allocation
     const float half_pi = 1.57079632679489661923f;
-    svfloat32_t vhalf_pi = svdup_f32(half_pi);
+    const float pi      = 3.14159265358979323846f;
+    const float inv_pi  = 0.31830988618379067154f;
+    const float c1 =  1.0f;
+    const float c3 = -0.16666667163372039795f;
+    const float c5 =  0.00833333376795053482f;
+    const float c7 = -0.00019841269776225090f;
+    const float c9 =  0.00000275573189712526f;
 
-    // Create temporary buffer with x + pi/2
-    std::vector<float> temp(n);
+    svfloat32_t vhalf_pi = svdup_f32(half_pi);
+    svfloat32_t vpi      = svdup_f32(pi);
+    svfloat32_t vinv_pi  = svdup_f32(inv_pi);
+    svfloat32_t vc1 = svdup_f32(c1);
+    svfloat32_t vc3 = svdup_f32(c3);
+    svfloat32_t vc5 = svdup_f32(c5);
+    svfloat32_t vc7 = svdup_f32(c7);
+    svfloat32_t vc9 = svdup_f32(c9);
 
     uint64_t i = 0;
     svbool_t pg = svwhilelt_b32(i, (uint64_t)n);
 
     do {
-        svfloat32_t x = svld1_f32(pg, in + i);
-        svst1_f32(pg, temp.data() + i, svadd_f32_z(pg, x, vhalf_pi));
+        svfloat32_t x = svadd_f32_z(pg, svld1_f32(pg, in + i), vhalf_pi);
+
+        // Range reduction: x = x - round(x / pi) * pi
+        svfloat32_t k = svrintn_f32_z(pg, svmul_f32_z(pg, x, vinv_pi));
+        x = svmls_f32_z(pg, x, k, vpi);
+
+        svfloat32_t x2 = svmul_f32_z(pg, x, x);
+
+        svfloat32_t p = svmad_f32_z(pg, vc9, x2, vc7);
+        p = svmad_f32_z(pg, p, x2, vc5);
+        p = svmad_f32_z(pg, p, x2, vc3);
+        p = svmad_f32_z(pg, p, x2, vc1);
+        p = svmul_f32_z(pg, p, x);
+
+        // Sign flip for odd k
+        svint32_t ki = svcvt_s32_f32_z(pg, k);
+        svbool_t odd = svcmpne_s32(pg, svand_s32_z(pg, ki, svdup_s32(1)), svdup_s32(0));
+        p = svneg_f32_m(p, odd, p);
+
+        svst1_f32(pg, out + i, p);
+
         i += svcntw();
         pg = svwhilelt_b32(i, (uint64_t)n);
     } while (svptest_any(svptrue_b32(), pg));
-
-    sve2_fast_sin_f32(out, temp.data(), n);
 #else
     neon::neon_fast_cos_f32(out, in, n);
 #endif
@@ -336,41 +365,59 @@ void sve2_fast_cos_f32(float* out, const float* in, std::size_t n) {
 
 void sve2_fast_sigmoid_f32(float* out, const float* in, std::size_t n) {
 #ifdef OPTMATH_USE_SVE2
-    // Fast sigmoid: 1 / (1 + exp(-x))
-    const float clamp_max = 20.0f;
-    const float clamp_min = -20.0f;
-    svfloat32_t vclamp_max = svdup_f32(clamp_max);
-    svfloat32_t vclamp_min = svdup_f32(clamp_min);
+    // Fast sigmoid: 1 / (1 + exp(-x)) — single-pass, no heap allocation
+    const float log2e = 1.44269504088896341f;
+    const float ln2   = 0.693147180559945309f;
+    const float c0 = 1.0f;
+    const float c1 = 0.693147182464599609f;
+    const float c2 = 0.240226507186889648f;
+    const float c3 = 0.055504187941551208f;
+    const float c4 = 0.009618341922760010f;
+    const float c5 = 0.001333355903625488f;
+    const float c6 = 0.000154034309089184f;
 
-    // Clamp and negate input for exp(-x)
-    std::vector<float> neg_x(n);
+    svfloat32_t vone   = svdup_f32(1.0f);
+    svfloat32_t vlog2e = svdup_f32(log2e);
+    svfloat32_t vln2   = svdup_f32(ln2);
+    svfloat32_t vc0 = svdup_f32(c0), vc1 = svdup_f32(c1);
+    svfloat32_t vc2 = svdup_f32(c2), vc3 = svdup_f32(c3);
+    svfloat32_t vc4 = svdup_f32(c4), vc5 = svdup_f32(c5);
+    svfloat32_t vc6 = svdup_f32(c6);
+    svfloat32_t vclamp = svdup_f32(20.0f);
+    svfloat32_t vmax_exp = svdup_f32(88.0f);
 
     uint64_t i = 0;
     svbool_t pg = svwhilelt_b32(i, (uint64_t)n);
 
     do {
         svfloat32_t x = svld1_f32(pg, in + i);
-        // Clamp to [-20, 20]
-        x = svmin_f32_z(pg, svmax_f32_z(pg, x, vclamp_min), vclamp_max);
-        svst1_f32(pg, neg_x.data() + i, svneg_f32_z(pg, x));
-        i += svcntw();
-        pg = svwhilelt_b32(i, (uint64_t)n);
-    } while (svptest_any(svptrue_b32(), pg));
+        x = svmin_f32_z(pg, svmax_f32_z(pg, x, svneg_f32_z(pg, vclamp)), vclamp);
 
-    // Compute exp(-x)
-    std::vector<float> exp_neg_x(n);
-    sve2_fast_exp_f32(exp_neg_x.data(), neg_x.data(), n);
+        // Compute exp(-x) inline
+        svfloat32_t neg_x = svneg_f32_z(pg, x);
+        neg_x = svmin_f32_z(pg, svmax_f32_z(pg, neg_x, svneg_f32_z(pg, vmax_exp)), vmax_exp);
 
-    // Compute 1 / (1 + exp(-x))
-    svfloat32_t vone = svdup_f32(1.0f);
-    i = 0;
-    pg = svwhilelt_b32(i, (uint64_t)n);
+        svfloat32_t t = svmul_f32_z(pg, neg_x, vlog2e);
+        svfloat32_t k = svrintn_f32_z(pg, t);
+        svfloat32_t f = svmls_f32_z(pg, neg_x, k, vln2);
 
-    do {
-        svfloat32_t e = svld1_f32(pg, exp_neg_x.data() + i);
-        svfloat32_t denom = svadd_f32_z(pg, vone, e);
-        svfloat32_t result = svdiv_f32_z(pg, vone, denom);
+        svfloat32_t p = svmad_f32_z(pg, vc6, f, vc5);
+        p = svmad_f32_z(pg, p, f, vc4);
+        p = svmad_f32_z(pg, p, f, vc3);
+        p = svmad_f32_z(pg, p, f, vc2);
+        p = svmad_f32_z(pg, p, f, vc1);
+        p = svmad_f32_z(pg, p, f, vc0);
+
+        svint32_t ki = svcvt_s32_f32_z(pg, k);
+        ki = svadd_s32_z(pg, ki, svdup_s32(127));
+        ki = svlsl_n_s32_z(pg, ki, 23);
+        svfloat32_t scale = svreinterpret_f32_s32(ki);
+        svfloat32_t exp_neg = svmul_f32_z(pg, p, scale);
+
+        // sigmoid = 1 / (1 + exp(-x))
+        svfloat32_t result = svdiv_f32_z(pg, vone, svadd_f32_z(pg, vone, exp_neg));
         svst1_f32(pg, out + i, result);
+
         i += svcntw();
         pg = svwhilelt_b32(i, (uint64_t)n);
     } while (svptest_any(svptrue_b32(), pg));
@@ -381,37 +428,62 @@ void sve2_fast_sigmoid_f32(float* out, const float* in, std::size_t n) {
 
 void sve2_fast_tanh_f32(float* out, const float* in, std::size_t n) {
 #ifdef OPTMATH_USE_SVE2
-    // tanh(x) = 2 * sigmoid(2x) - 1
-    svfloat32_t vtwo = svdup_f32(2.0f);
+    // tanh(x) = 2*sigmoid(2x) - 1 — single-pass, no heap allocation
+    const float log2e = 1.44269504088896341f;
+    const float ln2   = 0.693147180559945309f;
+    const float c0 = 1.0f;
+    const float c1 = 0.693147182464599609f;
+    const float c2 = 0.240226507186889648f;
+    const float c3 = 0.055504187941551208f;
+    const float c4 = 0.009618341922760010f;
+    const float c5 = 0.001333355903625488f;
+    const float c6 = 0.000154034309089184f;
 
-    // Compute 2x
-    std::vector<float> two_x(n);
+    svfloat32_t vtwo    = svdup_f32(2.0f);
+    svfloat32_t vone    = svdup_f32(1.0f);
+    svfloat32_t vneg_one = svdup_f32(-1.0f);
+    svfloat32_t vlog2e  = svdup_f32(log2e);
+    svfloat32_t vln2    = svdup_f32(ln2);
+    svfloat32_t vc0 = svdup_f32(c0), vc1 = svdup_f32(c1);
+    svfloat32_t vc2 = svdup_f32(c2), vc3 = svdup_f32(c3);
+    svfloat32_t vc4 = svdup_f32(c4), vc5 = svdup_f32(c5);
+    svfloat32_t vc6 = svdup_f32(c6);
+    svfloat32_t vclamp  = svdup_f32(10.0f);
+    svfloat32_t vmax_exp = svdup_f32(88.0f);
 
     uint64_t i = 0;
     svbool_t pg = svwhilelt_b32(i, (uint64_t)n);
 
     do {
         svfloat32_t x = svld1_f32(pg, in + i);
-        svst1_f32(pg, two_x.data() + i, svmul_f32_z(pg, vtwo, x));
-        i += svcntw();
-        pg = svwhilelt_b32(i, (uint64_t)n);
-    } while (svptest_any(svptrue_b32(), pg));
+        x = svmin_f32_z(pg, svmax_f32_z(pg, x, svneg_f32_z(pg, vclamp)), vclamp);
 
-    // Compute sigmoid(2x)
-    std::vector<float> sig(n);
-    sve2_fast_sigmoid_f32(sig.data(), two_x.data(), n);
+        // Compute exp(-2x) inline
+        svfloat32_t neg_2x = svneg_f32_z(pg, svmul_f32_z(pg, vtwo, x));
+        neg_2x = svmin_f32_z(pg, svmax_f32_z(pg, neg_2x, svneg_f32_z(pg, vmax_exp)), vmax_exp);
 
-    // Compute 2*sigmoid(2x) - 1
-    svfloat32_t vone = svdup_f32(1.0f);
-    svfloat32_t vneg_one = svdup_f32(-1.0f);
-    i = 0;
-    pg = svwhilelt_b32(i, (uint64_t)n);
+        svfloat32_t t = svmul_f32_z(pg, neg_2x, vlog2e);
+        svfloat32_t k = svrintn_f32_z(pg, t);
+        svfloat32_t f = svmls_f32_z(pg, neg_2x, k, vln2);
 
-    do {
-        svfloat32_t s = svld1_f32(pg, sig.data() + i);
-        // result = 2*s - 1 = fma(2, s, -1)
-        svfloat32_t result = svmad_f32_z(pg, vtwo, s, vneg_one);
+        svfloat32_t p = svmad_f32_z(pg, vc6, f, vc5);
+        p = svmad_f32_z(pg, p, f, vc4);
+        p = svmad_f32_z(pg, p, f, vc3);
+        p = svmad_f32_z(pg, p, f, vc2);
+        p = svmad_f32_z(pg, p, f, vc1);
+        p = svmad_f32_z(pg, p, f, vc0);
+
+        svint32_t ki = svcvt_s32_f32_z(pg, k);
+        ki = svadd_s32_z(pg, ki, svdup_s32(127));
+        ki = svlsl_n_s32_z(pg, ki, 23);
+        svfloat32_t scale = svreinterpret_f32_s32(ki);
+        svfloat32_t exp_neg = svmul_f32_z(pg, p, scale);
+
+        // sigmoid(2x) = 1/(1+exp(-2x)), then tanh = 2*sig - 1
+        svfloat32_t sig = svdiv_f32_z(pg, vone, svadd_f32_z(pg, vone, exp_neg));
+        svfloat32_t result = svmad_f32_z(pg, vtwo, sig, vneg_one);
         svst1_f32(pg, out + i, result);
+
         i += svcntw();
         pg = svwhilelt_b32(i, (uint64_t)n);
     } while (svptest_any(svptrue_b32(), pg));
@@ -500,8 +572,11 @@ static void pack_B_panel_sve2(
     }
 }
 
-// 8x8 scalar microkernel for SVE2 GEMM
-// Accumulates C[0:mr, 0:nr] += A_packed * B_packed over k iterations
+// 8x8 SVE2 microkernel for GEMM
+// Accumulates C[0:8, 0:8] += A_packed[0:8, 0:k] * B_packed[0:k, 0:8]
+// Uses column-oriented accumulators and SVE2 FMA for the A720 pipeline.
+// On CIX P1 (128-bit SVE2, svcntw()=4), each svfloat32_t holds 4 floats,
+// so each 8-row column needs lo+hi pairs — same structure as the NEON kernel.
 static void micro_kernel_8x8_sve2(
     size_t k,
     const float* A_packed,  // packed: k panels of MR elements
@@ -509,25 +584,61 @@ static void micro_kernel_8x8_sve2(
     float* C,
     size_t ldc) {
 
-    // Scalar accumulation (simple, correct, and SVE2 predication handles edges)
-    float acc[MR][NR];
-    std::memset(acc, 0, sizeof(acc));
+    // 8 column accumulators, each split into lo (rows 0-3) and hi (rows 4-7)
+    svfloat32_t c0_lo = svdup_f32(0.0f), c0_hi = svdup_f32(0.0f);
+    svfloat32_t c1_lo = svdup_f32(0.0f), c1_hi = svdup_f32(0.0f);
+    svfloat32_t c2_lo = svdup_f32(0.0f), c2_hi = svdup_f32(0.0f);
+    svfloat32_t c3_lo = svdup_f32(0.0f), c3_hi = svdup_f32(0.0f);
+    svfloat32_t c4_lo = svdup_f32(0.0f), c4_hi = svdup_f32(0.0f);
+    svfloat32_t c5_lo = svdup_f32(0.0f), c5_hi = svdup_f32(0.0f);
+    svfloat32_t c6_lo = svdup_f32(0.0f), c6_hi = svdup_f32(0.0f);
+    svfloat32_t c7_lo = svdup_f32(0.0f), c7_hi = svdup_f32(0.0f);
+
+    svbool_t pt = svptrue_b32();
 
     for (size_t p = 0; p < k; ++p) {
-        for (size_t ii = 0; ii < MR; ++ii) {
-            float a_val = A_packed[p * MR + ii];
-            for (size_t jj = 0; jj < NR; ++jj) {
-                acc[ii][jj] += a_val * B_packed[p * NR + jj];
-            }
-        }
+        // Load A column panel (8 floats = rows 0-7 at k-index p)
+        svfloat32_t a_lo = svld1_f32(pt, A_packed + p * MR);      // rows 0-3
+        svfloat32_t a_hi = svld1_f32(pt, A_packed + p * MR + 4);  // rows 4-7
+
+        // Load B row panel (8 floats = cols 0-7 at k-index p)
+        // We need individual b[j] values for rank-1 broadcast
+        const float* bp = B_packed + p * NR;
+
+        // Rank-1 update: C[:,j] += A[:,p] * B[p,j] for j=0..7
+        c0_lo = svmla_n_f32_z(pt, c0_lo, a_lo, bp[0]);
+        c0_hi = svmla_n_f32_z(pt, c0_hi, a_hi, bp[0]);
+        c1_lo = svmla_n_f32_z(pt, c1_lo, a_lo, bp[1]);
+        c1_hi = svmla_n_f32_z(pt, c1_hi, a_hi, bp[1]);
+        c2_lo = svmla_n_f32_z(pt, c2_lo, a_lo, bp[2]);
+        c2_hi = svmla_n_f32_z(pt, c2_hi, a_hi, bp[2]);
+        c3_lo = svmla_n_f32_z(pt, c3_lo, a_lo, bp[3]);
+        c3_hi = svmla_n_f32_z(pt, c3_hi, a_hi, bp[3]);
+        c4_lo = svmla_n_f32_z(pt, c4_lo, a_lo, bp[4]);
+        c4_hi = svmla_n_f32_z(pt, c4_hi, a_hi, bp[4]);
+        c5_lo = svmla_n_f32_z(pt, c5_lo, a_lo, bp[5]);
+        c5_hi = svmla_n_f32_z(pt, c5_hi, a_hi, bp[5]);
+        c6_lo = svmla_n_f32_z(pt, c6_lo, a_lo, bp[6]);
+        c6_hi = svmla_n_f32_z(pt, c6_hi, a_hi, bp[6]);
+        c7_lo = svmla_n_f32_z(pt, c7_lo, a_lo, bp[7]);
+        c7_hi = svmla_n_f32_z(pt, c7_hi, a_hi, bp[7]);
     }
 
-    // Store results back to column-major C
-    for (size_t jj = 0; jj < NR; ++jj) {
-        for (size_t ii = 0; ii < MR; ++ii) {
-            C[ii + jj * ldc] += acc[ii][jj];
-        }
-    }
+    // Store: load existing C, add accumulators, store back (column-major)
+    #define SVE2_STORE_COL(j, lo, hi) \
+        svst1_f32(pt, C + (j)*ldc,     svadd_f32_z(pt, svld1_f32(pt, C + (j)*ldc),     lo)); \
+        svst1_f32(pt, C + (j)*ldc + 4, svadd_f32_z(pt, svld1_f32(pt, C + (j)*ldc + 4), hi));
+
+    SVE2_STORE_COL(0, c0_lo, c0_hi);
+    SVE2_STORE_COL(1, c1_lo, c1_hi);
+    SVE2_STORE_COL(2, c2_lo, c2_hi);
+    SVE2_STORE_COL(3, c3_lo, c3_hi);
+    SVE2_STORE_COL(4, c4_lo, c4_hi);
+    SVE2_STORE_COL(5, c5_lo, c5_hi);
+    SVE2_STORE_COL(6, c6_lo, c6_hi);
+    SVE2_STORE_COL(7, c7_lo, c7_hi);
+
+    #undef SVE2_STORE_COL
 }
 
 #endif // OPTMATH_USE_SVE2

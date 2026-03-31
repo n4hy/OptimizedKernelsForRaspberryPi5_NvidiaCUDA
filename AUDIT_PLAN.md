@@ -1,6 +1,6 @@
 # OptMathKernels Codebase Audit Plan
 
-**Date:** 2026-03-06 (Updated: 2026-03-08, Reviewed: 2026-03-08)
+**Date:** 2026-03-06 (Updated: 2026-03-31, Reviewed: 2026-03-31)
 **Auditor:** Claude Code
 **Scope:** Full codebase audit for errors, bugs, and optimization opportunities
 
@@ -11,7 +11,7 @@
 Comprehensive audit of 56+ source files revealed **37 issues** across severity levels:
 - **Critical:** 8 (data corruption, crashes) — **8 FIXED** (6 in fc09a8f/98f463a, 2 in 4f784eb)
 - **High:** 14 (silent failures, memory safety) — **4 FIXED** (Issues 11, 12 verified fixed)
-- **Medium:** 15 (performance, edge cases)
+- **Medium:** 15 (performance, edge cases) — **7 FIXED** in v0.5.7 (SVE2 transcendentals, GEMM, CAF)
 - **Low/Optimization:** 10 (code quality, enhancements)
 - **New issues found in review:** 3 (Vulkan-specific)
 
@@ -21,6 +21,31 @@ Comprehensive audit of 56+ source files revealed **37 issues** across severity l
 | `fc09a8f` | Fix crash-causing and silent-incorrect-result bugs from audit |
 | `98f463a` | Fix numerical stability, error handling, and platform test portability |
 | `4f784eb` | v0.5.2: Fix critical bugs across SVE2, CUDA, Vulkan, NEON, and platform backends |
+| v0.5.7 | SVE2 pipeline optimization: inline transcendentals, vectorize GEMM microkernel, vectorize CAF Doppler shift |
+
+---
+
+## v0.5.7 Performance Optimizations (2026-03-31)
+
+Full audit and optimization pass targeting Orange Pi 6 Plus (CIX P1 CD8160, Cortex-A720, SVE2 128-bit).
+
+### Optimizations Applied
+
+| # | File | Issue | Fix | Impact |
+|---|------|-------|-----|--------|
+| P1 | `sve2_kernels.cpp` | `sve2_fast_cos_f32` allocates `std::vector` temp, 2-pass | Inlined sin polynomial with pi/2 offset, single SVE2 pass | Eliminates heap alloc per call |
+| P2 | `sve2_kernels.cpp` | `sve2_fast_sigmoid_f32` allocates 2 vectors, 3-pass | Fused single-pass with inline exp(-x) | Eliminates 2 heap allocs + 2 passes |
+| P3 | `sve2_kernels.cpp` | `sve2_fast_tanh_f32` allocates 2 vectors, 3-pass | Fused single-pass with inline exp(-2x) | Eliminates 2 heap allocs + 2 passes |
+| P4 | `sve2_kernels.cpp` | `micro_kernel_8x8_sve2` uses scalar `float acc[8][8]` | Vectorized with `svmla_n_f32_z` FMA, column-oriented accumulators | SVE2 FMA pipeline utilization |
+| P5 | `neon_radar.cpp` | CAF Doppler shift uses per-sample `std::cos`/`std::sin` | Batch `neon_fast_cos/sin_f32` + `neon_complex_mul_f32` | ~10x faster Doppler phase |
+| P6 | `sve2_radar.cpp` | CAF Doppler shift uses per-sample `std::cos`/`std::sin` | Batch `sve2_fast_cos/sin_f32` + `sve2_complex_mul_f32` | ~10x faster Doppler phase |
+| P7 | `sve2_complex.cpp` | `sve2_complex_exp_f32` uses scalar `std::cos`/`std::sin` | Uses `sve2_fast_cos/sin_f32` | Full SVE2 vectorization |
+
+### Architecture Safety
+- All SVE2 changes inside `#ifdef OPTMATH_USE_SVE2` with NEON/scalar `#else` fallbacks
+- All NEON radar changes use functions that have `#ifdef OPTMATH_USE_NEON` / scalar fallbacks
+- No changes to public headers, APIs, or non-ARM code paths
+- 16/16 test suites pass on Orange Pi 6 Plus
 
 ---
 
