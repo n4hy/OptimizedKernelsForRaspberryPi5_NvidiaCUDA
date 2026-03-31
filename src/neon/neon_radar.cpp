@@ -445,31 +445,71 @@ void cfar_2d_f32(std::uint8_t* detections,
                  std::size_t ref_range, std::size_t ref_doppler,
                  float pfa_factor) {
 
+    const std::size_t N = n_doppler * n_range;
+    if (N == 0) return;
+
+    // --- Step 1: Build summed area table (SAT) in double to avoid float drift ---
+    // SAT is (n_doppler+1) x (n_range+1), 1-indexed, with a zero border.
+    // sat[d+1][r+1] = sum of input[0..d][0..r]
+    const std::size_t sat_cols = n_range + 1;
+    const std::size_t sat_rows = n_doppler + 1;
+    std::vector<double> sat(sat_rows * sat_cols, 0.0);
+
+    for (std::size_t d = 0; d < n_doppler; ++d) {
+        double row_sum = 0.0;
+        for (std::size_t r = 0; r < n_range; ++r) {
+            row_sum += (double)input[d * n_range + r];
+            sat[(d + 1) * sat_cols + (r + 1)] = row_sum + sat[d * sat_cols + (r + 1)];
+        }
+    }
+
+    // --- Helper: query SAT for sum over rect [d0..d1, r0..r1] (inclusive, 0-indexed) ---
+    // Clamped to valid range. Returns sum and count of valid cells.
+    auto rect_sum = [&](int d0, int r0, int d1, int r1,
+                        double& sum_out, int& count_out) {
+        // Clamp to valid bounds
+        d0 = std::max(d0, 0);
+        r0 = std::max(r0, 0);
+        d1 = std::min(d1, (int)n_doppler - 1);
+        r1 = std::min(r1, (int)n_range - 1);
+        if (d0 > d1 || r0 > r1) {
+            sum_out = 0.0;
+            count_out = 0;
+            return;
+        }
+        // SAT lookup (1-indexed): sum = sat[d1+1][r1+1] - sat[d0][r1+1] - sat[d1+1][r0] + sat[d0][r0]
+        sum_out = sat[(d1 + 1) * sat_cols + (r1 + 1)]
+                - sat[d0       * sat_cols + (r1 + 1)]
+                - sat[(d1 + 1) * sat_cols + r0]
+                + sat[d0       * sat_cols + r0];
+        count_out = (d1 - d0 + 1) * (r1 - r0 + 1);
+    };
+
+    // --- Step 2: For each cell, compute noise = (outer_sum - guard_sum) / (outer_count - guard_count) ---
+    const int gr = (int)guard_range;
+    const int gd = (int)guard_doppler;
+    const int rr = (int)ref_range;
+    const int rd = (int)ref_doppler;
+
     for (std::size_t d = 0; d < n_doppler; ++d) {
         for (std::size_t r = 0; r < n_range; ++r) {
-            float sum = 0.0f;
-            std::size_t count = 0;
+            // Outer window: [d - (gd+rd) .. d + (gd+rd)] x [r - (gr+rr) .. r + (gr+rr)]
+            double outer_sum;
+            int outer_count;
+            rect_sum((int)d - gd - rd, (int)r - gr - rr,
+                     (int)d + gd + rd, (int)r + gr + rr,
+                     outer_sum, outer_count);
 
-            // Scan the reference window (excluding guard cells)
-            for (int dd = -(int)(guard_doppler + ref_doppler); dd <= (int)(guard_doppler + ref_doppler); ++dd) {
-                for (int dr = -(int)(guard_range + ref_range); dr <= (int)(guard_range + ref_range); ++dr) {
-                    // Skip cell under test
-                    if (dd == 0 && dr == 0) continue;
+            // Guard window (includes CUT): [d - gd .. d + gd] x [r - gr .. r + gr]
+            double guard_sum;
+            int guard_count;
+            rect_sum((int)d - gd, (int)r - gr,
+                     (int)d + gd, (int)r + gr,
+                     guard_sum, guard_count);
 
-                    // Skip guard cells
-                    if (std::abs(dd) <= (int)guard_doppler && std::abs(dr) <= (int)guard_range) continue;
-
-                    int nd = (int)d + dd;
-                    int nr = (int)r + dr;
-
-                    if (nd >= 0 && nd < (int)n_doppler && nr >= 0 && nr < (int)n_range) {
-                        sum += input[nd * n_range + nr];
-                        count++;
-                    }
-                }
-            }
-
-            float avg = (count > 0) ? (sum / count) : 0.0f;
+            // Reference cells = outer - guard
+            int ref_count = outer_count - guard_count;
+            float avg = (ref_count > 0) ? (float)((outer_sum - guard_sum) / ref_count) : 0.0f;
             float thresh = pfa_factor * avg;
 
             detections[d * n_range + r] = (input[d * n_range + r] > thresh) ? 1 : 0;
