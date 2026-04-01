@@ -982,7 +982,7 @@ void cuda_softmax_f32(float* out, const float* in, size_t n) {
         for (size_t i = 0; i < n; ++i) host_out[i] /= sum;
         cudaMemcpy(out, host_out.data(), n * sizeof(float), cudaMemcpyHostToDevice);
     }
-    CUDA_CHECK_LAST();
+    CUDA_KERNEL_CHECK();
 #endif
 }
 
