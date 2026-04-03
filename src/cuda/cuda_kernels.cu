@@ -1540,5 +1540,592 @@ Eigen::VectorXf cuda_mat_vec_mul(const Eigen::MatrixXf& A, const Eigen::VectorXf
     return y;
 }
 
+// =============================================================================
+// Linear Algebra Operations (cuSOLVER)
+// =============================================================================
+
+Eigen::MatrixXf cuda_cholesky(const Eigen::MatrixXf& A) {
+    int n = A.rows();
+    Eigen::MatrixXf L = Eigen::MatrixXf::Zero(n, n);
+
+    // Input validation
+    if (n != A.cols()) {
+        std::cerr << "cuda_cholesky: Matrix must be square" << std::endl;
+        return L;
+    }
+
+    if (n == 0) {
+        return L;
+    }
+
+#ifdef OPTMATH_USE_CUDA
+    // Check if GPU architecture is supported by compiled toolkit
+    if (!is_device_supported()) {
+        // Blackwell (SM 10.0+) requires CUDA 13.x+, fall back to Eigen
+        Eigen::LLT<Eigen::MatrixXf> llt(A);
+        if (llt.info() == Eigen::Success) {
+            L = llt.matrixL();
+        }
+        return L;
+    }
+
+    CudaContext& ctx = CudaContext::get();
+    if (!ctx.is_initialized()) ctx.init();
+    if (!ctx.is_initialized()) {
+        // Fallback to Eigen
+        Eigen::LLT<Eigen::MatrixXf> llt(A);
+        if (llt.info() == Eigen::Success) {
+            L = llt.matrixL();
+        }
+        return L;
+    }
+
+    cusolverDnHandle_t cusolver = ctx.cusolver();
+    if (cusolver == nullptr) {
+        std::cerr << "cuda_cholesky: cuSOLVER handle is null" << std::endl;
+        Eigen::LLT<Eigen::MatrixXf> llt(A);
+        if (llt.info() == Eigen::Success) L = llt.matrixL();
+        return L;
+    }
+
+    float* d_A = nullptr;
+    float* d_workspace = nullptr;
+    int* d_info = nullptr;
+    int workspace_size = 0;
+    int h_info = 0;
+    cudaError_t cuda_err;
+    cusolverStatus_t cusolver_err;
+
+    auto cleanup = [&]() {
+        if (d_A) cudaFree(d_A);
+        if (d_workspace) cudaFree(d_workspace);
+        if (d_info) cudaFree(d_info);
+    };
+
+    // Allocate device memory for matrix (column-major, same as Eigen)
+    cuda_err = cudaMalloc(&d_A, n * n * sizeof(float));
+    if (cuda_err != cudaSuccess) {
+        std::cerr << "cuda_cholesky: cudaMalloc d_A failed" << std::endl;
+        cleanup();
+        Eigen::LLT<Eigen::MatrixXf> llt(A);
+        if (llt.info() == Eigen::Success) L = llt.matrixL();
+        return L;
+    }
+
+    // Allocate device info
+    cuda_err = cudaMalloc(&d_info, sizeof(int));
+    if (cuda_err != cudaSuccess) {
+        std::cerr << "cuda_cholesky: cudaMalloc d_info failed" << std::endl;
+        cleanup();
+        Eigen::LLT<Eigen::MatrixXf> llt(A);
+        if (llt.info() == Eigen::Success) L = llt.matrixL();
+        return L;
+    }
+
+    // Copy matrix to device
+    cuda_err = cudaMemcpy(d_A, A.data(), n * n * sizeof(float), cudaMemcpyHostToDevice);
+    if (cuda_err != cudaSuccess) {
+        std::cerr << "cuda_cholesky: cudaMemcpy to device failed" << std::endl;
+        cleanup();
+        Eigen::LLT<Eigen::MatrixXf> llt(A);
+        if (llt.info() == Eigen::Success) L = llt.matrixL();
+        return L;
+    }
+
+    // Query workspace size for Cholesky factorization
+    // CUBLAS_FILL_MODE_LOWER: compute lower triangular L where A = L * L^T
+    cusolver_err = cusolverDnSpotrf_bufferSize(cusolver, CUBLAS_FILL_MODE_LOWER, n, d_A, n, &workspace_size);
+    if (cusolver_err != CUSOLVER_STATUS_SUCCESS) {
+        std::cerr << "cuda_cholesky: cusolverDnSpotrf_bufferSize failed: " << cusolver_err << std::endl;
+        cleanup();
+        Eigen::LLT<Eigen::MatrixXf> llt(A);
+        if (llt.info() == Eigen::Success) L = llt.matrixL();
+        return L;
+    }
+
+    // Allocate workspace
+    if (workspace_size > 0) {
+        cuda_err = cudaMalloc(&d_workspace, workspace_size * sizeof(float));
+        if (cuda_err != cudaSuccess) {
+            std::cerr << "cuda_cholesky: cudaMalloc workspace failed" << std::endl;
+            cleanup();
+            Eigen::LLT<Eigen::MatrixXf> llt(A);
+            if (llt.info() == Eigen::Success) L = llt.matrixL();
+            return L;
+        }
+    }
+
+    // Perform Cholesky factorization
+    // Result overwrites d_A with lower triangular factor L
+    cusolver_err = cusolverDnSpotrf(cusolver, CUBLAS_FILL_MODE_LOWER, n, d_A, n,
+                                     d_workspace, workspace_size, d_info);
+    if (cusolver_err != CUSOLVER_STATUS_SUCCESS) {
+        std::cerr << "cuda_cholesky: cusolverDnSpotrf failed: " << cusolver_err << std::endl;
+        cleanup();
+        Eigen::LLT<Eigen::MatrixXf> llt(A);
+        if (llt.info() == Eigen::Success) L = llt.matrixL();
+        return L;
+    }
+
+    // Synchronize before reading result
+    cudaDeviceSynchronize();
+
+    // Copy info back to check for positive definiteness
+    cuda_err = cudaMemcpy(&h_info, d_info, sizeof(int), cudaMemcpyDeviceToHost);
+    if (cuda_err != cudaSuccess) {
+        std::cerr << "cuda_cholesky: cudaMemcpy d_info failed" << std::endl;
+        cleanup();
+        return L;
+    }
+
+    if (h_info > 0) {
+        std::cerr << "cuda_cholesky: Matrix is not positive definite (info=" << h_info << ")" << std::endl;
+        cleanup();
+        return L;
+    } else if (h_info < 0) {
+        std::cerr << "cuda_cholesky: Invalid argument " << -h_info << std::endl;
+        cleanup();
+        return L;
+    }
+
+    // Copy result back to host
+    cuda_err = cudaMemcpy(L.data(), d_A, n * n * sizeof(float), cudaMemcpyDeviceToHost);
+    if (cuda_err != cudaSuccess) {
+        std::cerr << "cuda_cholesky: cudaMemcpy to host failed" << std::endl;
+        cleanup();
+        L.setZero();
+        return L;
+    }
+
+    // Zero out upper triangular part (cuSOLVER leaves it unchanged)
+    for (int j = 1; j < n; ++j) {
+        for (int i = 0; i < j; ++i) {
+            L(i, j) = 0.0f;
+        }
+    }
+
+    cleanup();
+#else
+    // Fallback to Eigen when CUDA is not available
+    Eigen::LLT<Eigen::MatrixXf> llt(A);
+    if (llt.info() == Eigen::Success) {
+        L = llt.matrixL();
+    }
+#endif
+
+    return L;
+}
+
+Eigen::MatrixXd cuda_cholesky_f64(const Eigen::MatrixXd& A) {
+    int n = A.rows();
+    Eigen::MatrixXd L = Eigen::MatrixXd::Zero(n, n);
+
+    // Input validation
+    if (n != A.cols()) {
+        std::cerr << "cuda_cholesky_f64: Matrix must be square" << std::endl;
+        return L;
+    }
+
+    if (n == 0) {
+        return L;
+    }
+
+#ifdef OPTMATH_USE_CUDA
+    // Check if GPU architecture is supported by compiled toolkit
+    if (!is_device_supported()) {
+        Eigen::LLT<Eigen::MatrixXd> llt(A);
+        if (llt.info() == Eigen::Success) {
+            L = llt.matrixL();
+        }
+        return L;
+    }
+
+    CudaContext& ctx = CudaContext::get();
+    if (!ctx.is_initialized()) ctx.init();
+    if (!ctx.is_initialized()) {
+        Eigen::LLT<Eigen::MatrixXd> llt(A);
+        if (llt.info() == Eigen::Success) {
+            L = llt.matrixL();
+        }
+        return L;
+    }
+
+    cusolverDnHandle_t cusolver = ctx.cusolver();
+    if (cusolver == nullptr) {
+        Eigen::LLT<Eigen::MatrixXd> llt(A);
+        if (llt.info() == Eigen::Success) L = llt.matrixL();
+        return L;
+    }
+
+    double* d_A = nullptr;
+    double* d_workspace = nullptr;
+    int* d_info = nullptr;
+    int workspace_size = 0;
+    int h_info = 0;
+    cudaError_t cuda_err;
+    cusolverStatus_t cusolver_err;
+
+    auto cleanup = [&]() {
+        if (d_A) cudaFree(d_A);
+        if (d_workspace) cudaFree(d_workspace);
+        if (d_info) cudaFree(d_info);
+    };
+
+    // Allocate device memory
+    cuda_err = cudaMalloc(&d_A, n * n * sizeof(double));
+    if (cuda_err != cudaSuccess) {
+        cleanup();
+        Eigen::LLT<Eigen::MatrixXd> llt(A);
+        if (llt.info() == Eigen::Success) L = llt.matrixL();
+        return L;
+    }
+
+    cuda_err = cudaMalloc(&d_info, sizeof(int));
+    if (cuda_err != cudaSuccess) {
+        cleanup();
+        Eigen::LLT<Eigen::MatrixXd> llt(A);
+        if (llt.info() == Eigen::Success) L = llt.matrixL();
+        return L;
+    }
+
+    // Copy matrix to device
+    cuda_err = cudaMemcpy(d_A, A.data(), n * n * sizeof(double), cudaMemcpyHostToDevice);
+    if (cuda_err != cudaSuccess) {
+        cleanup();
+        Eigen::LLT<Eigen::MatrixXd> llt(A);
+        if (llt.info() == Eigen::Success) L = llt.matrixL();
+        return L;
+    }
+
+    // Query workspace size
+    cusolver_err = cusolverDnDpotrf_bufferSize(cusolver, CUBLAS_FILL_MODE_LOWER, n, d_A, n, &workspace_size);
+    if (cusolver_err != CUSOLVER_STATUS_SUCCESS) {
+        cleanup();
+        Eigen::LLT<Eigen::MatrixXd> llt(A);
+        if (llt.info() == Eigen::Success) L = llt.matrixL();
+        return L;
+    }
+
+    // Allocate workspace
+    if (workspace_size > 0) {
+        cuda_err = cudaMalloc(&d_workspace, workspace_size * sizeof(double));
+        if (cuda_err != cudaSuccess) {
+            cleanup();
+            Eigen::LLT<Eigen::MatrixXd> llt(A);
+            if (llt.info() == Eigen::Success) L = llt.matrixL();
+            return L;
+        }
+    }
+
+    // Perform Cholesky factorization (double precision)
+    cusolver_err = cusolverDnDpotrf(cusolver, CUBLAS_FILL_MODE_LOWER, n, d_A, n,
+                                     d_workspace, workspace_size, d_info);
+    if (cusolver_err != CUSOLVER_STATUS_SUCCESS) {
+        cleanup();
+        Eigen::LLT<Eigen::MatrixXd> llt(A);
+        if (llt.info() == Eigen::Success) L = llt.matrixL();
+        return L;
+    }
+
+    // Synchronize before reading result
+    cudaDeviceSynchronize();
+
+    // Check info
+    cuda_err = cudaMemcpy(&h_info, d_info, sizeof(int), cudaMemcpyDeviceToHost);
+    if (cuda_err != cudaSuccess || h_info != 0) {
+        if (h_info > 0) {
+            std::cerr << "cuda_cholesky_f64: Matrix is not positive definite" << std::endl;
+        }
+        cleanup();
+        return L;
+    }
+
+    // Copy result back
+    cuda_err = cudaMemcpy(L.data(), d_A, n * n * sizeof(double), cudaMemcpyDeviceToHost);
+    if (cuda_err != cudaSuccess) {
+        cleanup();
+        L.setZero();
+        return L;
+    }
+
+    // Zero upper triangular
+    for (int j = 1; j < n; ++j) {
+        for (int i = 0; i < j; ++i) {
+            L(i, j) = 0.0;
+        }
+    }
+
+    cleanup();
+#else
+    Eigen::LLT<Eigen::MatrixXd> llt(A);
+    if (llt.info() == Eigen::Success) {
+        L = llt.matrixL();
+    }
+#endif
+
+    return L;
+}
+
+Eigen::VectorXf cuda_cholesky_solve(const Eigen::MatrixXf& L, const Eigen::VectorXf& b) {
+    int n = L.rows();
+    Eigen::VectorXf x = Eigen::VectorXf::Zero(n);
+
+    if (n != L.cols() || n != b.size()) {
+        std::cerr << "cuda_cholesky_solve: Dimension mismatch" << std::endl;
+        return x;
+    }
+
+    if (n == 0) {
+        return x;
+    }
+
+#ifdef OPTMATH_USE_CUDA
+    // Check if GPU architecture is supported by compiled toolkit
+    if (!is_device_supported()) {
+        x = L.triangularView<Eigen::Lower>().solve(b);
+        x = L.transpose().triangularView<Eigen::Upper>().solve(x);
+        return x;
+    }
+
+    CudaContext& ctx = CudaContext::get();
+    if (!ctx.is_initialized()) ctx.init();
+    if (!ctx.is_initialized()) {
+        // Fallback: L * L^T * x = b => x = L^{-T} * L^{-1} * b
+        x = L.triangularView<Eigen::Lower>().solve(b);
+        x = L.transpose().triangularView<Eigen::Upper>().solve(x);
+        return x;
+    }
+
+    cusolverDnHandle_t cusolver = ctx.cusolver();
+    if (cusolver == nullptr) {
+        x = L.triangularView<Eigen::Lower>().solve(b);
+        x = L.transpose().triangularView<Eigen::Upper>().solve(x);
+        return x;
+    }
+
+    float* d_L = nullptr;
+    float* d_b = nullptr;
+    int* d_info = nullptr;
+    int h_info = 0;
+    cudaError_t cuda_err;
+    cusolverStatus_t cusolver_err;
+
+    auto cleanup = [&]() {
+        if (d_L) cudaFree(d_L);
+        if (d_b) cudaFree(d_b);
+        if (d_info) cudaFree(d_info);
+    };
+
+    // Allocate device memory
+    cuda_err = cudaMalloc(&d_L, n * n * sizeof(float));
+    if (cuda_err != cudaSuccess) {
+        cleanup();
+        x = L.triangularView<Eigen::Lower>().solve(b);
+        x = L.transpose().triangularView<Eigen::Upper>().solve(x);
+        return x;
+    }
+
+    cuda_err = cudaMalloc(&d_b, n * sizeof(float));
+    if (cuda_err != cudaSuccess) {
+        cleanup();
+        x = L.triangularView<Eigen::Lower>().solve(b);
+        x = L.transpose().triangularView<Eigen::Upper>().solve(x);
+        return x;
+    }
+
+    cuda_err = cudaMalloc(&d_info, sizeof(int));
+    if (cuda_err != cudaSuccess) {
+        cleanup();
+        x = L.triangularView<Eigen::Lower>().solve(b);
+        x = L.transpose().triangularView<Eigen::Upper>().solve(x);
+        return x;
+    }
+
+    // Copy L and b to device
+    cuda_err = cudaMemcpy(d_L, L.data(), n * n * sizeof(float), cudaMemcpyHostToDevice);
+    if (cuda_err != cudaSuccess) {
+        cleanup();
+        x = L.triangularView<Eigen::Lower>().solve(b);
+        x = L.transpose().triangularView<Eigen::Upper>().solve(x);
+        return x;
+    }
+
+    cuda_err = cudaMemcpy(d_b, b.data(), n * sizeof(float), cudaMemcpyHostToDevice);
+    if (cuda_err != cudaSuccess) {
+        cleanup();
+        x = L.triangularView<Eigen::Lower>().solve(b);
+        x = L.transpose().triangularView<Eigen::Upper>().solve(x);
+        return x;
+    }
+
+    // Solve using pre-computed Cholesky factorization
+    // cusolverDnSpotrs solves A*X = B where A = L*L^T
+    cusolver_err = cusolverDnSpotrs(cusolver, CUBLAS_FILL_MODE_LOWER, n, 1,
+                                     d_L, n, d_b, n, d_info);
+    if (cusolver_err != CUSOLVER_STATUS_SUCCESS) {
+        cleanup();
+        x = L.triangularView<Eigen::Lower>().solve(b);
+        x = L.transpose().triangularView<Eigen::Upper>().solve(x);
+        return x;
+    }
+
+    // Synchronize before reading result
+    cudaDeviceSynchronize();
+
+    // Check info
+    cuda_err = cudaMemcpy(&h_info, d_info, sizeof(int), cudaMemcpyDeviceToHost);
+    if (cuda_err != cudaSuccess || h_info != 0) {
+        cleanup();
+        return x;
+    }
+
+    // Copy result back (solution is in d_b)
+    cuda_err = cudaMemcpy(x.data(), d_b, n * sizeof(float), cudaMemcpyDeviceToHost);
+    if (cuda_err != cudaSuccess) {
+        cleanup();
+        x.setZero();
+        return x;
+    }
+
+    cleanup();
+#else
+    // Eigen fallback
+    x = L.triangularView<Eigen::Lower>().solve(b);
+    x = L.transpose().triangularView<Eigen::Upper>().solve(x);
+#endif
+
+    return x;
+}
+
+Eigen::MatrixXf cuda_cholesky_inverse(const Eigen::MatrixXf& L) {
+    int n = L.rows();
+    Eigen::MatrixXf Ainv = Eigen::MatrixXf::Identity(n, n);
+
+    if (n != L.cols()) {
+        std::cerr << "cuda_cholesky_inverse: Matrix must be square" << std::endl;
+        return Ainv;
+    }
+
+    if (n == 0) {
+        return Ainv;
+    }
+
+#ifdef OPTMATH_USE_CUDA
+    // Check if GPU architecture is supported by compiled toolkit
+    if (!is_device_supported()) {
+        Eigen::MatrixXf Linv = L.triangularView<Eigen::Lower>().solve(Eigen::MatrixXf::Identity(n, n));
+        Ainv = Linv.transpose() * Linv;
+        return Ainv;
+    }
+
+    CudaContext& ctx = CudaContext::get();
+    if (!ctx.is_initialized()) ctx.init();
+    if (!ctx.is_initialized()) {
+        // Fallback: A^{-1} = (L * L^T)^{-1} = L^{-T} * L^{-1}
+        Eigen::MatrixXf Linv = L.triangularView<Eigen::Lower>().solve(Eigen::MatrixXf::Identity(n, n));
+        Ainv = Linv.transpose() * Linv;
+        return Ainv;
+    }
+
+    cusolverDnHandle_t cusolver = ctx.cusolver();
+    if (cusolver == nullptr) {
+        Eigen::MatrixXf Linv = L.triangularView<Eigen::Lower>().solve(Eigen::MatrixXf::Identity(n, n));
+        Ainv = Linv.transpose() * Linv;
+        return Ainv;
+    }
+
+    float* d_L = nullptr;
+    float* d_I = nullptr;
+    int* d_info = nullptr;
+    int h_info = 0;
+    cudaError_t cuda_err;
+    cusolverStatus_t cusolver_err;
+
+    auto cleanup = [&]() {
+        if (d_L) cudaFree(d_L);
+        if (d_I) cudaFree(d_I);
+        if (d_info) cudaFree(d_info);
+    };
+
+    // Allocate device memory
+    cuda_err = cudaMalloc(&d_L, n * n * sizeof(float));
+    if (cuda_err != cudaSuccess) {
+        cleanup();
+        Eigen::MatrixXf Linv = L.triangularView<Eigen::Lower>().solve(Eigen::MatrixXf::Identity(n, n));
+        Ainv = Linv.transpose() * Linv;
+        return Ainv;
+    }
+
+    cuda_err = cudaMalloc(&d_I, n * n * sizeof(float));
+    if (cuda_err != cudaSuccess) {
+        cleanup();
+        Eigen::MatrixXf Linv = L.triangularView<Eigen::Lower>().solve(Eigen::MatrixXf::Identity(n, n));
+        Ainv = Linv.transpose() * Linv;
+        return Ainv;
+    }
+
+    cuda_err = cudaMalloc(&d_info, sizeof(int));
+    if (cuda_err != cudaSuccess) {
+        cleanup();
+        Eigen::MatrixXf Linv = L.triangularView<Eigen::Lower>().solve(Eigen::MatrixXf::Identity(n, n));
+        Ainv = Linv.transpose() * Linv;
+        return Ainv;
+    }
+
+    // Copy L and identity matrix to device
+    cuda_err = cudaMemcpy(d_L, L.data(), n * n * sizeof(float), cudaMemcpyHostToDevice);
+    if (cuda_err != cudaSuccess) {
+        cleanup();
+        Eigen::MatrixXf Linv = L.triangularView<Eigen::Lower>().solve(Eigen::MatrixXf::Identity(n, n));
+        Ainv = Linv.transpose() * Linv;
+        return Ainv;
+    }
+
+    cuda_err = cudaMemcpy(d_I, Ainv.data(), n * n * sizeof(float), cudaMemcpyHostToDevice);
+    if (cuda_err != cudaSuccess) {
+        cleanup();
+        Eigen::MatrixXf Linv = L.triangularView<Eigen::Lower>().solve(Eigen::MatrixXf::Identity(n, n));
+        Ainv = Linv.transpose() * Linv;
+        return Ainv;
+    }
+
+    // Solve L * L^T * X = I for X = A^{-1}
+    cusolver_err = cusolverDnSpotrs(cusolver, CUBLAS_FILL_MODE_LOWER, n, n,
+                                     d_L, n, d_I, n, d_info);
+    if (cusolver_err != CUSOLVER_STATUS_SUCCESS) {
+        cleanup();
+        Eigen::MatrixXf Linv = L.triangularView<Eigen::Lower>().solve(Eigen::MatrixXf::Identity(n, n));
+        Ainv = Linv.transpose() * Linv;
+        return Ainv;
+    }
+
+    // Synchronize before reading result
+    cudaDeviceSynchronize();
+
+    // Check info
+    cuda_err = cudaMemcpy(&h_info, d_info, sizeof(int), cudaMemcpyDeviceToHost);
+    if (cuda_err != cudaSuccess || h_info != 0) {
+        cleanup();
+        return Ainv;
+    }
+
+    // Copy result back
+    cuda_err = cudaMemcpy(Ainv.data(), d_I, n * n * sizeof(float), cudaMemcpyDeviceToHost);
+    if (cuda_err != cudaSuccess) {
+        cleanup();
+        Ainv.setIdentity();
+        return Ainv;
+    }
+
+    cleanup();
+#else
+    // Eigen fallback
+    Eigen::MatrixXf Linv = L.triangularView<Eigen::Lower>().solve(Eigen::MatrixXf::Identity(n, n));
+    Ainv = Linv.transpose() * Linv;
+#endif
+
+    return Ainv;
+}
+
 } // namespace cuda
 } // namespace optmath

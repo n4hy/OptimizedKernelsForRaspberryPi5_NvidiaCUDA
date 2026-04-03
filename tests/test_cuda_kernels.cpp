@@ -28,7 +28,13 @@ protected:
         if (!optmath::cuda::is_available()) {
             GTEST_SKIP() << "CUDA not available";
         }
-        optmath::cuda::init();
+        // Check if device is supported by toolkit before initializing
+        if (!optmath::cuda::is_device_supported()) {
+            GTEST_SKIP() << "GPU architecture not supported by CUDA toolkit (Blackwell requires CUDA 13.x+)";
+        }
+        if (!optmath::cuda::CudaContext::get().init()) {
+            GTEST_SKIP() << "CUDA context initialization failed";
+        }
 #else
         GTEST_SKIP() << "CUDA not enabled in build";
 #endif
@@ -410,6 +416,133 @@ TEST_F(CudaKernelTest, Convolution1D) {
 
     // Allow some tolerance due to boundary handling differences
     EXPECT_NEAR(result(mid), expected, std::abs(expected) * 0.1f + 1e-3f);
+}
+
+// ============================================================================
+// Cholesky Decomposition Tests (cuSOLVER)
+// ============================================================================
+
+TEST_F(CudaKernelTest, CholeskySmall) {
+    // Create a small symmetric positive definite matrix
+    // A = B * B^T + diagonal for positive definiteness
+    const int n = 4;
+    Eigen::MatrixXf B = Eigen::MatrixXf::Random(n, n);
+    Eigen::MatrixXf A = B * B.transpose() + n * Eigen::MatrixXf::Identity(n, n);
+
+    Eigen::MatrixXf L = optmath::cuda::cuda_cholesky(A);
+
+    // Verify L is lower triangular
+    for (int j = 1; j < n; ++j) {
+        for (int i = 0; i < j; ++i) {
+            EXPECT_NEAR(L(i, j), 0.0f, TOLERANCE);
+        }
+    }
+
+    // Verify L * L^T = A
+    Eigen::MatrixXf reconstructed = L * L.transpose();
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) {
+            EXPECT_NEAR(reconstructed(i, j), A(i, j), TOLERANCE * 10);
+        }
+    }
+}
+
+TEST_F(CudaKernelTest, CholeskyMedium) {
+    // Medium-sized matrix
+    const int n = 64;
+    Eigen::MatrixXf B = Eigen::MatrixXf::Random(n, n);
+    Eigen::MatrixXf A = B * B.transpose() + n * Eigen::MatrixXf::Identity(n, n);
+
+    Eigen::MatrixXf L = optmath::cuda::cuda_cholesky(A);
+
+    // Verify reconstruction
+    Eigen::MatrixXf reconstructed = L * L.transpose();
+    float max_error = (reconstructed - A).cwiseAbs().maxCoeff();
+    EXPECT_LT(max_error, 1e-3f);
+}
+
+TEST_F(CudaKernelTest, CholeskyLarge) {
+    // Large matrix to exercise GPU parallelism
+    const int n = 512;
+    Eigen::MatrixXf B = Eigen::MatrixXf::Random(n, n);
+    Eigen::MatrixXf A = B * B.transpose() + n * Eigen::MatrixXf::Identity(n, n);
+
+    Eigen::MatrixXf L = optmath::cuda::cuda_cholesky(A);
+
+    // Verify dimensions
+    EXPECT_EQ(L.rows(), n);
+    EXPECT_EQ(L.cols(), n);
+
+    // Spot check reconstruction
+    Eigen::MatrixXf reconstructed = L * L.transpose();
+    EXPECT_NEAR(reconstructed(0, 0), A(0, 0), 1e-2f);
+    EXPECT_NEAR(reconstructed(n/2, n/2), A(n/2, n/2), 1e-2f);
+    EXPECT_NEAR(reconstructed(n-1, n-1), A(n-1, n-1), 1e-2f);
+}
+
+TEST_F(CudaKernelTest, CholeskySolve) {
+    const int n = 32;
+    Eigen::MatrixXf B = Eigen::MatrixXf::Random(n, n);
+    Eigen::MatrixXf A = B * B.transpose() + n * Eigen::MatrixXf::Identity(n, n);
+    Eigen::VectorXf b = Eigen::VectorXf::Random(n);
+
+    // Compute Cholesky factor
+    Eigen::MatrixXf L = optmath::cuda::cuda_cholesky(A);
+
+    // Solve Ax = b using the Cholesky factor
+    Eigen::VectorXf x = optmath::cuda::cuda_cholesky_solve(L, b);
+
+    // Verify A * x = b
+    Eigen::VectorXf Ax = A * x;
+    for (int i = 0; i < n; ++i) {
+        EXPECT_NEAR(Ax(i), b(i), TOLERANCE * 100);
+    }
+}
+
+TEST_F(CudaKernelTest, CholeskyInverse) {
+    const int n = 16;
+    Eigen::MatrixXf B = Eigen::MatrixXf::Random(n, n);
+    Eigen::MatrixXf A = B * B.transpose() + n * Eigen::MatrixXf::Identity(n, n);
+
+    // Compute Cholesky factor
+    Eigen::MatrixXf L = optmath::cuda::cuda_cholesky(A);
+
+    // Compute inverse
+    Eigen::MatrixXf Ainv = optmath::cuda::cuda_cholesky_inverse(L);
+
+    // Verify A * A^{-1} = I
+    Eigen::MatrixXf product = A * Ainv;
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) {
+            float expected = (i == j) ? 1.0f : 0.0f;
+            EXPECT_NEAR(product(i, j), expected, 1e-3f);
+        }
+    }
+}
+
+TEST_F(CudaKernelTest, CholeskyDoublePrecision) {
+    const int n = 32;
+    Eigen::MatrixXd B = Eigen::MatrixXd::Random(n, n);
+    Eigen::MatrixXd A = B * B.transpose() + n * Eigen::MatrixXd::Identity(n, n);
+
+    Eigen::MatrixXd L = optmath::cuda::cuda_cholesky_f64(A);
+
+    // Verify reconstruction with double precision
+    Eigen::MatrixXd reconstructed = L * L.transpose();
+    double max_error = (reconstructed - A).cwiseAbs().maxCoeff();
+    EXPECT_LT(max_error, 1e-10);
+}
+
+TEST_F(CudaKernelTest, CholeskyNotPositiveDefinite) {
+    // Create a matrix that is NOT positive definite
+    const int n = 4;
+    Eigen::MatrixXf A = Eigen::MatrixXf::Zero(n, n);
+    A(0, 0) = -1.0f;  // Negative diagonal makes it not positive definite
+
+    Eigen::MatrixXf L = optmath::cuda::cuda_cholesky(A);
+
+    // Should return zero matrix for non-positive-definite input
+    EXPECT_NEAR(L.norm(), 0.0f, TOLERANCE);
 }
 
 // ============================================================================

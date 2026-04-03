@@ -148,6 +148,15 @@ DeviceInfo get_device_info(int device_id) {
     return info;
 }
 
+bool is_device_supported(int device_id) {
+#ifdef OPTMATH_USE_CUDA
+    DeviceInfo info = get_device_info(device_id);
+    return info.is_supported_by_toolkit();
+#else
+    return false;
+#endif
+}
+
 void print_device_info(int device_id) {
     DeviceInfo info = get_device_info(device_id);
 
@@ -171,6 +180,7 @@ void print_device_info(int device_id) {
     std::cout << "  FP8: " << (info.fp8_support ? "Yes" : "No") << std::endl;
     std::cout << "  Blackwell: " << (info.blackwell ? "Yes" : "No") << std::endl;
     std::cout << "  Unified Memory: " << (info.unified_memory ? "Yes" : "No") << std::endl;
+    std::cout << "  Supported by Toolkit: " << (info.is_supported_by_toolkit() ? "Yes" : "No (requires CUDA 13.x+)") << std::endl;
 }
 
 // =============================================================================
@@ -261,6 +271,17 @@ bool CudaContext::init(int device_id) {
     CUDA_CHECK_RETURN(cudaSetDevice(device_id), false);
     m_device_id = device_id;
 
+    // Check if GPU architecture is supported by compiled toolkit
+    DeviceInfo info = get_device_info(device_id);
+    if (!info.is_supported_by_toolkit()) {
+        std::cerr << "CUDA: GPU architecture SM " << info.compute_capability_major << "."
+                  << info.compute_capability_minor << " is not supported by CUDA toolkit "
+                  << (CUDART_VERSION / 1000) << "." << ((CUDART_VERSION % 1000) / 10) << std::endl;
+        std::cerr << "  Blackwell (SM 10.0+) requires CUDA 13.x or later" << std::endl;
+        std::cerr << "  Falling back to CPU implementation" << std::endl;
+        return false;
+    }
+
     // Create cuBLAS handle
     cublasStatus_t cublas_status = cublasCreate(&m_cublas_handle);
     if (cublas_status != CUBLAS_STATUS_SUCCESS) {
@@ -283,8 +304,7 @@ bool CudaContext::init(int device_id) {
     cublasSetStream(m_cublas_handle, m_default_stream);
     cusolverDnSetStream(m_cusolver_handle, m_default_stream);
 
-    // Print initialization info
-    DeviceInfo info = get_device_info(device_id);
+    // Print initialization info (reuse info from architecture check above)
     std::cout << "CUDA Context initialized on " << info.name
               << " (SM " << info.compute_capability_major << "."
               << info.compute_capability_minor << ")" << std::endl;

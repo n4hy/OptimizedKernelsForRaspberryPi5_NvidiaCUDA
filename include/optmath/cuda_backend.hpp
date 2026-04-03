@@ -93,6 +93,21 @@ struct DeviceInfo {
     bool is_ada_or_newer() const { return compute_capability_major > 8 || (compute_capability_major == 8 && compute_capability_minor >= 9); }
     bool is_hopper_or_newer() const { return compute_capability_major >= 9; }
     bool is_blackwell_or_newer() const { return compute_capability_major >= 10; }
+
+    /**
+     * @brief Check if GPU is supported by the compiled CUDA toolkit
+     *
+     * CUDA 12.x supports up to Hopper (SM 9.x). Blackwell (SM 10.0+) requires CUDA 13.x+.
+     * This check allows graceful fallback to CPU when running on unsupported architectures.
+     */
+    bool is_supported_by_toolkit() const {
+#if CUDART_VERSION < 13000
+        // CUDA 12.x and earlier don't support Blackwell (SM 10.0+)
+        return compute_capability_major < 10;
+#else
+        return true;
+#endif
+    }
 };
 
 /**
@@ -105,6 +120,14 @@ DeviceInfo get_device_info(int device_id = 0);
  * @brief Print device capabilities to stdout
  */
 void print_device_info(int device_id = 0);
+
+/**
+ * @brief Check if the current GPU is supported by the compiled CUDA toolkit
+ *
+ * Returns false for Blackwell (SM 10.0+) when compiled with CUDA 12.x or earlier.
+ * Use this to decide whether to use GPU acceleration or fall back to CPU.
+ */
+bool is_device_supported(int device_id = 0);
 
 // =============================================================================
 // CUDA Context Management
@@ -401,8 +424,54 @@ void cuda_batched_mat_mul_f32(float** C, float** A, float** B,
 // Linear Algebra (cuSOLVER)
 // =============================================================================
 
-// Cholesky decomposition
+/**
+ * @brief GPU-accelerated Cholesky decomposition (single precision)
+ *
+ * Computes the lower triangular Cholesky factor L such that A = L * L^T.
+ * Uses cuSOLVER's potrf for GPU acceleration on positive definite matrices.
+ *
+ * @param A Symmetric positive definite matrix (NxN)
+ * @return L Lower triangular Cholesky factor, or zero matrix if A is not positive definite
+ *
+ * Performance: For matrices > 256x256, GPU acceleration typically provides
+ * 5-50x speedup over CPU Eigen depending on GPU architecture.
+ * TF32 Tensor Cores (Ampere+) provide additional acceleration.
+ */
 Eigen::MatrixXf cuda_cholesky(const Eigen::MatrixXf& A);
+
+/**
+ * @brief GPU-accelerated Cholesky decomposition (double precision)
+ *
+ * Double precision variant for applications requiring higher accuracy.
+ * Uses cuSOLVER's dpotrf.
+ *
+ * @param A Symmetric positive definite matrix (NxN)
+ * @return L Lower triangular Cholesky factor
+ */
+Eigen::MatrixXd cuda_cholesky_f64(const Eigen::MatrixXd& A);
+
+/**
+ * @brief Solve Ax = b using pre-computed Cholesky factor
+ *
+ * Given the Cholesky factor L where A = L * L^T, solves the system Ax = b.
+ * Uses cuSOLVER's potrs for GPU-accelerated forward/backward substitution.
+ *
+ * @param L Lower triangular Cholesky factor (from cuda_cholesky)
+ * @param b Right-hand side vector
+ * @return x Solution vector
+ */
+Eigen::VectorXf cuda_cholesky_solve(const Eigen::MatrixXf& L, const Eigen::VectorXf& b);
+
+/**
+ * @brief Compute matrix inverse using pre-computed Cholesky factor
+ *
+ * Given L where A = L * L^T, computes A^{-1} efficiently.
+ * Uses GPU-accelerated triangular solves.
+ *
+ * @param L Lower triangular Cholesky factor (from cuda_cholesky)
+ * @return A^{-1} Matrix inverse
+ */
+Eigen::MatrixXf cuda_cholesky_inverse(const Eigen::MatrixXf& L);
 
 // LU decomposition
 std::pair<Eigen::MatrixXf, Eigen::VectorXi> cuda_lu(const Eigen::MatrixXf& A);

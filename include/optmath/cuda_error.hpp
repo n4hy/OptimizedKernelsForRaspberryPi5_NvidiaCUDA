@@ -133,6 +133,20 @@ namespace cuda {
     } while (0)
 
 /**
+ * @brief cuSOLVER error checking macro with return value
+ */
+#define CUSOLVER_CHECK_RETURN(call, ret)                                       \
+    do {                                                                       \
+        cusolverStatus_t status = call;                                        \
+        if (status != CUSOLVER_STATUS_SUCCESS) {                               \
+            std::cerr << "cuSOLVER error in " << __FILE__ << ":" << __LINE__    \
+                      << " (" << __func__ << "): status " << status            \
+                      << std::endl;                                            \
+            return ret;                                                        \
+        }                                                                      \
+    } while (0)
+
+/**
  * @brief cuFFT error checking macro
  */
 #define CUFFT_CHECK(call)                                                      \
