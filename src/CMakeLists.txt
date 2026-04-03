@@ -190,8 +190,8 @@ if(ENABLE_CUDA)
         target_compile_options(OptMathKernels PRIVATE
             # Maximum register usage for Blackwell's larger register file
             $<$<COMPILE_LANGUAGE:CUDA>:-maxrregcount=255>
-            # Enable all PTX optimizations
-            $<$<COMPILE_LANGUAGE:CUDA>:-Xptxas --allow-expensive-optimizations=true>
+            # Enable all PTX optimizations (use comma syntax for -Xptxas)
+            $<$<COMPILE_LANGUAGE:CUDA>:-Xptxas=-allow-expensive-optimizations=true>
         )
     endif()
 endif()

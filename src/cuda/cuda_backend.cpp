@@ -119,8 +119,16 @@ DeviceInfo get_device_info(int device_id) {
     info.l2_cache_size = prop.l2CacheSize;
 
     // Memory bandwidth in GB/s
+    // Note: memoryClockRate was removed in CUDA 13.0, use peak memory bandwidth if available
+#if CUDART_VERSION >= 13000
+    // CUDA 13+ doesn't expose memory clock rate directly
+    // Use a reasonable estimate based on memory bus width and modern memory speeds
+    // For HBM2e: ~2.4 GT/s, for GDDR6X: ~21 Gbps per pin
+    info.memory_bandwidth_gbps = static_cast<float>(prop.memoryBusWidth) * 2.0f / 8.0f; // Approximate
+#else
     info.memory_bandwidth_gbps = 2.0f * prop.memoryClockRate *
                                   (prop.memoryBusWidth / 8) / 1.0e6f;
+#endif
 
     // Shared memory info
     info.shared_memory_per_block = prop.sharedMemPerBlock;
@@ -128,11 +136,11 @@ DeviceInfo get_device_info(int device_id) {
 
     // Feature detection based on compute capability
     int cc = prop.major * 10 + prop.minor;
-    info.fp16_support = (cc >= 60);        // Pascal+
-    info.tensor_cores = (cc >= 70);        // Volta+
-    info.tf32_support = (cc >= 80);        // Ampere+
-    info.fp8_support = (cc >= 100);        // Blackwell+ (RTX 5090)
-    info.blackwell = (cc >= 100);          // Blackwell architecture
+    info.fp16_support = (cc >= 60);        // Pascal+ (SM 6.0+)
+    info.tensor_cores = (cc >= 70);        // Volta+ (SM 7.0+)
+    info.tf32_support = (cc >= 80);        // Ampere+ (SM 8.0+)
+    info.fp8_support = (cc >= 100);        // Blackwell+ (SM 10.0+)
+    info.is_blackwell_arch = (cc >= 100);  // Blackwell architecture
     info.unified_memory = (prop.managedMemory != 0);
 
     // Get free memory
@@ -164,6 +172,20 @@ void print_device_info(int device_id) {
     std::cout << "Name: " << info.name << std::endl;
     std::cout << "Compute Capability: " << info.compute_capability_major << "."
               << info.compute_capability_minor << std::endl;
+
+    // Architecture generation
+    std::string arch_name;
+    if (info.is_blackwell()) arch_name = "Blackwell";
+    else if (info.is_hopper()) arch_name = "Hopper";
+    else if (info.is_ada()) arch_name = "Ada Lovelace";
+    else if (info.is_ampere()) arch_name = "Ampere";
+    else if (info.is_turing()) arch_name = "Turing";
+    else if (info.is_volta()) arch_name = "Volta";
+    else if (info.is_pascal()) arch_name = "Pascal";
+    else if (info.is_maxwell()) arch_name = "Maxwell";
+    else arch_name = "Unknown/Legacy";
+    std::cout << "Architecture: " << arch_name << std::endl;
+
     std::cout << "Total Memory: " << (info.total_memory / (1024 * 1024)) << " MB" << std::endl;
     std::cout << "Free Memory: " << (info.free_memory / (1024 * 1024)) << " MB" << std::endl;
     std::cout << "Multiprocessors: " << info.multiprocessor_count << std::endl;
@@ -174,13 +196,16 @@ void print_device_info(int device_id) {
     std::cout << "Shared Memory/Block: " << (info.shared_memory_per_block / 1024) << " KB" << std::endl;
     std::cout << "Shared Memory/SM: " << (info.shared_memory_per_multiprocessor / 1024) << " KB" << std::endl;
     std::cout << "Features:" << std::endl;
-    std::cout << "  FP16: " << (info.fp16_support ? "Yes" : "No") << std::endl;
-    std::cout << "  Tensor Cores: " << (info.tensor_cores ? "Yes" : "No") << std::endl;
-    std::cout << "  TF32: " << (info.tf32_support ? "Yes" : "No") << std::endl;
-    std::cout << "  FP8: " << (info.fp8_support ? "Yes" : "No") << std::endl;
-    std::cout << "  Blackwell: " << (info.blackwell ? "Yes" : "No") << std::endl;
-    std::cout << "  Unified Memory: " << (info.unified_memory ? "Yes" : "No") << std::endl;
-    std::cout << "  Supported by Toolkit: " << (info.is_supported_by_toolkit() ? "Yes" : "No (requires CUDA 13.x+)") << std::endl;
+    std::cout << "  FP16 Arithmetic: " << (info.supports_fp16_arithmetic() ? "Yes" : "No") << " (Pascal+)" << std::endl;
+    std::cout << "  Tensor Cores: " << (info.supports_tensor_cores() ? "Yes" : "No") << " (Volta+)" << std::endl;
+    std::cout << "  TF32 Tensor: " << (info.supports_tf32() ? "Yes" : "No") << " (Ampere+)" << std::endl;
+    std::cout << "  FP8: " << (info.supports_fp8() ? "Yes" : "No") << " (Blackwell+)" << std::endl;
+    std::cout << "  Unified Memory: " << (info.supports_unified_memory() ? "Yes" : "No") << std::endl;
+    std::cout << "  Supported by Toolkit: " << (info.is_supported_by_toolkit() ? "Yes" : "No") << std::endl;
+    if (!info.is_supported_by_toolkit()) {
+        std::cout << "    Recommended CUDA version: " << (info.recommended_cuda_version() / 1000)
+                  << "." << ((info.recommended_cuda_version() % 1000) / 10) << std::endl;
+    }
 }
 
 // =============================================================================
@@ -598,7 +623,15 @@ template<typename T>
 void UnifiedBuffer<T>::prefetch_to_device(int device_id) {
 #ifdef OPTMATH_USE_CUDA
     if (m_data && m_size > 0) {
+#if CUDART_VERSION >= 13000
+        // CUDA 13+ uses cudaMemLocation for device specification
+        cudaMemLocation location;
+        location.type = cudaMemLocationTypeDevice;
+        location.id = device_id;
+        cudaMemPrefetchAsync(m_data, m_size * sizeof(T), location, 0);
+#else
         cudaMemPrefetchAsync(m_data, m_size * sizeof(T), device_id);
+#endif
     }
 #endif
 }
@@ -607,7 +640,15 @@ template<typename T>
 void UnifiedBuffer<T>::prefetch_to_host() {
 #ifdef OPTMATH_USE_CUDA
     if (m_data && m_size > 0) {
+#if CUDART_VERSION >= 13000
+        // CUDA 13+ uses cudaMemLocation for host specification
+        cudaMemLocation location;
+        location.type = cudaMemLocationTypeHost;
+        location.id = 0;
+        cudaMemPrefetchAsync(m_data, m_size * sizeof(T), location, 0);
+#else
         cudaMemPrefetchAsync(m_data, m_size * sizeof(T), cudaCpuDeviceId);
+#endif
     }
 #endif
 }

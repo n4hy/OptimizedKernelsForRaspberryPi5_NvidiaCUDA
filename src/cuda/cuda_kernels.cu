@@ -1558,14 +1558,31 @@ Eigen::MatrixXf cuda_cholesky(const Eigen::MatrixXf& A) {
         return L;
     }
 
-#ifdef OPTMATH_USE_CUDA
-    // Check if GPU architecture is supported by compiled toolkit
-    if (!is_device_supported()) {
-        // Blackwell (SM 10.0+) requires CUDA 13.x+, fall back to Eigen
+    // CPU fallback helper
+    auto cpu_fallback = [&A, &L, n]() -> bool {
         Eigen::LLT<Eigen::MatrixXf> llt(A);
         if (llt.info() == Eigen::Success) {
             L = llt.matrixL();
+            return true;
         }
+        return false;
+    };
+
+#ifdef OPTMATH_USE_CUDA
+    // Check if GPU architecture is supported by compiled toolkit
+    if (!is_device_supported()) {
+        // GPU architecture not supported by this CUDA toolkit version
+        // Silently fall back to CPU (Eigen) implementation
+        cpu_fallback();
+        return L;
+    }
+
+    // For small matrices, CPU may be faster due to GPU overhead
+    // Threshold depends on architecture; newer GPUs have lower overhead
+    DeviceInfo info = get_device_info();
+    int small_matrix_threshold = info.is_ampere_or_newer() ? 64 : 128;
+    if (n < small_matrix_threshold) {
+        cpu_fallback();
         return L;
     }
 

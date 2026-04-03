@@ -7,13 +7,23 @@
  * Leverages cuBLAS, cuFFT, cuSOLVER, Thrust, and custom CUDA kernels
  * for maximum GPU acceleration.
  *
+ * Supported GPU Architectures:
+ * - Maxwell (SM 5.0/5.2): GTX 980/970/Titan X - basic CUDA support
+ * - Pascal (SM 6.0/6.1): GTX 1080/1070, Tesla P100 - FP16 support
+ * - Volta (SM 7.0): Tesla V100, Titan V - first Tensor Cores
+ * - Turing (SM 7.5): RTX 2080/2070/2060 - 2nd gen Tensor Cores
+ * - Ampere (SM 8.0/8.6): RTX 3090/3080, A100 - TF32 Tensor Cores
+ * - Ada Lovelace (SM 8.9): RTX 4090/4080/4070 - 4th gen Tensor Cores
+ * - Blackwell (SM 10.0): RTX 5090/5080 - 5th gen Tensor Cores, FP8
+ *
  * Features:
- * - Tensor Core acceleration (Ampere, Ada Lovelace, Hopper architectures)
- * - Mixed-precision computing (FP16, TF32, FP32, FP64)
+ * - Tensor Core acceleration (Volta+ SM 7.0+)
+ * - Mixed-precision computing (FP16, TF32, FP32, FP64, FP8 on Blackwell)
  * - Unified Memory for simplified data management
  * - Multi-GPU support
  * - Asynchronous execution with CUDA streams
  * - Pinned memory for fast CPU-GPU transfers
+ * - Graceful CPU fallback for unsupported architectures
  */
 
 #pragma once
@@ -69,7 +79,7 @@ struct DeviceInfo {
     bool tf32_support;           // Ampere+ (SM 8.0+)
     bool fp16_support;           // Pascal+ (SM 6.0+)
     bool fp8_support;            // Blackwell (SM 10.0+) - RTX 5090
-    bool blackwell;              // Blackwell architecture (SM 10.0+)
+    bool is_blackwell_arch;      // Blackwell architecture (SM 10.0+)
     bool unified_memory;
     int memory_bus_width;
     float memory_bandwidth_gbps;
@@ -85,28 +95,83 @@ struct DeviceInfo {
     bool has_tf32() const { return tf32_support; }
     bool has_fp16() const { return fp16_support; }
     bool has_fp8() const { return fp8_support; }
-    bool is_blackwell() const { return blackwell; }
+    bool is_blackwell_gpu() const { return is_blackwell_arch; }
 
-    // Architecture detection helpers
+    // Architecture detection helpers (ordered by age, oldest to newest)
+    bool is_maxwell() const { return compute_capability_major == 5; }
+    bool is_pascal() const { return compute_capability_major == 6; }
+    bool is_volta() const { return compute_capability_major == 7 && compute_capability_minor == 0; }
+    bool is_turing() const { return compute_capability_major == 7 && compute_capability_minor == 5; }
+    bool is_ampere() const { return compute_capability_major == 8 && compute_capability_minor < 9; }
+    bool is_ada() const { return compute_capability_major == 8 && compute_capability_minor == 9; }
+    bool is_hopper() const { return compute_capability_major == 9; }
+    bool is_blackwell() const { return compute_capability_major >= 10; }
+
+    // "Or newer" helpers for feature detection
+    bool is_maxwell_or_newer() const { return compute_capability_major >= 5; }
+    bool is_pascal_or_newer() const { return compute_capability_major >= 6; }
     bool is_volta_or_newer() const { return compute_capability_major >= 7; }
+    bool is_turing_or_newer() const { return compute_capability_major > 7 || (compute_capability_major == 7 && compute_capability_minor >= 5); }
     bool is_ampere_or_newer() const { return compute_capability_major >= 8; }
     bool is_ada_or_newer() const { return compute_capability_major > 8 || (compute_capability_major == 8 && compute_capability_minor >= 9); }
     bool is_hopper_or_newer() const { return compute_capability_major >= 9; }
     bool is_blackwell_or_newer() const { return compute_capability_major >= 10; }
 
+    // Feature availability based on architecture
+    bool supports_tensor_cores() const { return is_volta_or_newer(); }  // SM 7.0+
+    bool supports_tf32() const { return is_ampere_or_newer(); }          // SM 8.0+
+    bool supports_fp16_arithmetic() const { return is_pascal_or_newer(); } // SM 6.0+
+    bool supports_fp8() const { return is_blackwell_or_newer(); }        // SM 10.0+
+    bool supports_unified_memory() const { return is_maxwell_or_newer(); } // SM 5.0+
+
     /**
      * @brief Check if GPU is supported by the compiled CUDA toolkit
      *
-     * CUDA 12.x supports up to Hopper (SM 9.x). Blackwell (SM 10.0+) requires CUDA 13.x+.
+     * CUDA toolkit version requirements by architecture:
+     * - Maxwell (SM 5.x): CUDA 6.5+
+     * - Pascal (SM 6.x): CUDA 8.0+
+     * - Volta (SM 7.0): CUDA 9.0+
+     * - Turing (SM 7.5): CUDA 10.0+
+     * - Ampere (SM 8.x): CUDA 11.0+
+     * - Ada (SM 8.9): CUDA 11.8+
+     * - Hopper (SM 9.x): CUDA 12.0+
+     * - Blackwell (SM 10.x): CUDA 12.8+ (native), CUDA 13.0+ (full support)
+     *
      * This check allows graceful fallback to CPU when running on unsupported architectures.
      */
     bool is_supported_by_toolkit() const {
 #if CUDART_VERSION < 13000
-        // CUDA 12.x and earlier don't support Blackwell (SM 10.0+)
-        return compute_capability_major < 10;
+        // CUDA 12.x and earlier: limited Blackwell support (PTX forward compat only)
+        // For reliable operation, require CUDA 13+ for Blackwell
+        if (compute_capability_major >= 10) {
+#if CUDART_VERSION >= 12008
+            // CUDA 12.8+ has native Blackwell support but may have issues
+            // Return true but with caveat - user should upgrade to CUDA 13
+            return true;
 #else
+            // CUDA < 12.8 doesn't support Blackwell at all
+            return false;
+#endif
+        }
+        return true;
+#else
+        // CUDA 13+ supports all architectures including Blackwell natively
         return true;
 #endif
+    }
+
+    /**
+     * @brief Get minimum recommended CUDA version for this GPU
+     */
+    int recommended_cuda_version() const {
+        if (compute_capability_major >= 10) return 13000;  // Blackwell: CUDA 13.0
+        if (compute_capability_major >= 9) return 12000;   // Hopper: CUDA 12.0
+        if (compute_capability_major == 8 && compute_capability_minor >= 9) return 11080; // Ada: CUDA 11.8
+        if (compute_capability_major >= 8) return 11000;   // Ampere: CUDA 11.0
+        if (compute_capability_major == 7 && compute_capability_minor >= 5) return 10000; // Turing: CUDA 10.0
+        if (compute_capability_major >= 7) return 9000;    // Volta: CUDA 9.0
+        if (compute_capability_major >= 6) return 8000;    // Pascal: CUDA 8.0
+        return 6500;                                        // Maxwell: CUDA 6.5
     }
 };
 

@@ -256,34 +256,45 @@ cat /proc/cpuinfo | grep avx2
 
 ### NVIDIA CUDA/RTX
 
-**Supported GPUs**: NVIDIA GPUs with Compute Capability 7.0+ (Turing and later)
+**Supported GPUs**: NVIDIA GPUs with Compute Capability 5.0+ (Maxwell and later)
 
 | GPU Generation | Architecture | Compute Capability | CUDA Cores | Tensor Cores | Memory |
 |----------------|--------------|-------------------|------------|--------------|--------|
+| **GTX 900** | Maxwell | 5.0/5.2 | 1024-3072 | - | 2-12 GB |
+| **GTX 1000** | Pascal | 6.1 | 1280-3584 | - | 3-11 GB |
+| **Tesla P100** | Pascal | 6.0 | 3584 | - | 12-16 GB |
+| **Tesla V100** | Volta | 7.0 | 5120 | 640 | 16-32 GB |
 | **RTX 2000** | Turing | 7.5 | 2304-4608 | 288-576 | 8-11 GB |
 | **RTX 3000** | Ampere | 8.6 | 3584-10496 | 112-328 | 8-24 GB |
-| **RTX 4000** | Ada Lovelace | 8.9 | 5888-16384 | 184-512 | 8-24 GB |
-| **RTX 5000** | Blackwell | 10.0 | 21760 | 680 | 32 GB |
-| **Jetson Orin** | Ampere | 8.7 | 1024-2048 | 32-64 | 8-64 GB |
-| **Tesla V100** | Volta | 7.0 | 5120 | 640 | 16-32 GB |
 | **A100** | Ampere | 8.0 | 6912 | 432 | 40-80 GB |
+| **RTX 4000** | Ada Lovelace | 8.9 | 5888-16384 | 184-512 | 8-24 GB |
 | **H100** | Hopper | 9.0 | 14592 | 456 | 80 GB |
+| **Jetson Orin** | Ampere | 8.7 | 1024-2048 | 32-64 | 8-64 GB |
+| **RTX 5000** | Blackwell | 10.0 | 21760 | 680 | 32 GB |
 
-**Tensor Core Generations**:
-| Generation | Architecture | Precision | Peak TFLOPS |
-|------------|--------------|-----------|-------------|
-| Gen 1 | Turing | FP16 | 110 |
-| Gen 3 | Ampere | TF32, FP16, BF16 | 312 |
-| Gen 4 | Ada | TF32, FP16, BF16, FP8 | 660 |
-| Gen 5 | Blackwell | TF32, FP16, BF16, FP8, FP4 | 3352 |
+**Architecture Features**:
+| Architecture | SM | FP16 | Tensor Cores | TF32 | FP8 |
+|--------------|-----|------|--------------|------|-----|
+| Maxwell | 5.x | ❌ | ❌ | ❌ | ❌ |
+| Pascal | 6.x | ✅ | ❌ | ❌ | ❌ |
+| Volta | 7.0 | ✅ | ✅ Gen 1 | ❌ | ❌ |
+| Turing | 7.5 | ✅ | ✅ Gen 2 | ❌ | ❌ |
+| Ampere | 8.x | ✅ | ✅ Gen 3 | ✅ | ❌ |
+| Ada | 8.9 | ✅ | ✅ Gen 4 | ✅ | ✅ |
+| Hopper | 9.x | ✅ | ✅ Gen 4 | ✅ | ✅ |
+| Blackwell | 10.x | ✅ | ✅ Gen 5 | ✅ | ✅ |
 
 **CUDA Toolkit Requirements**:
 | GPU Architecture | Minimum CUDA | Recommended CUDA | SM Version |
 |------------------|--------------|------------------|------------|
+| Maxwell (GTX 9xx) | CUDA 6.5 | CUDA 11.x+ | SM 5.0/5.2 |
+| Pascal (GTX 10xx) | CUDA 8.0 | CUDA 11.x+ | SM 6.0/6.1 |
+| Volta (V100) | CUDA 9.0 | CUDA 11.x+ | SM 7.0 |
 | Turing (RTX 20xx) | CUDA 10.0 | CUDA 12.x | SM 7.5 |
 | Ampere (RTX 30xx) | CUDA 11.0 | CUDA 12.x | SM 8.0/8.6 |
 | Ada (RTX 40xx) | CUDA 11.8 | CUDA 12.x | SM 8.9 |
-| Blackwell (RTX 50xx) | **CUDA 12.8** | CUDA 12.8+ | SM 10.0 |
+| Hopper (H100) | CUDA 12.0 | CUDA 12.x | SM 9.0 |
+| Blackwell (RTX 50xx) | **CUDA 12.8** | **CUDA 13.0+** | SM 10.0 |
 
 > **Note**: RTX 5090 (Blackwell) requires CUDA 12.8+ for native SM 10.0 support. Earlier CUDA versions (e.g., 12.0 from Ubuntu packages) will compile with SM 9.0a for Hopper, but this may cause runtime issues due to PTX forward compatibility limitations. For optimal Blackwell performance, install CUDA 12.8+ directly from NVIDIA.
 
@@ -417,18 +428,29 @@ make -j$(nproc)
 ```bash
 mkdir -p build && cd build
 
-# For RTX 20xx/30xx/40xx (CUDA 12.0+)
+# Default: All architectures Maxwell through Blackwell (CUDA 13+)
 cmake -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
       -DENABLE_NEON=OFF \
       -DENABLE_VULKAN=ON \
       -DENABLE_CUDA=ON \
-      -DCMAKE_CUDA_ARCHITECTURES="75;86;89" \
       -DBUILD_TESTS=ON \
       -DCMAKE_INSTALL_PREFIX=/usr/local \
       ..
 
-# For RTX 50xx Blackwell (REQUIRES CUDA 12.8+)
+# Specific architectures - Modern GPUs only (RTX 20xx/30xx/40xx)
+cmake -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CUDA_ARCHITECTURES="75;86;89" \
+      -DENABLE_CUDA=ON \
+      ..
+
+# Legacy GPUs (GTX 900/1000 series) - CUDA 11.x compatible
+cmake -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CUDA_ARCHITECTURES="50;52;60;61" \
+      -DENABLE_CUDA=ON \
+      ..
+
+# For RTX 50xx Blackwell (REQUIRES CUDA 12.8+ or CUDA 13)
 cmake -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
       -DENABLE_NEON=OFF \
@@ -452,7 +474,7 @@ make -j$(nproc)
 | `ENABLE_I8MM` | ON | Enable I8MM int8 matrix multiply |
 | `ENABLE_VULKAN` | ON | Enable Vulkan compute |
 | `ENABLE_CUDA` | ON | Enable NVIDIA CUDA |
-| `CMAKE_CUDA_ARCHITECTURES` | 75;86;89 (or 100 for Blackwell) | CUDA compute capabilities (SM 100 requires CUDA 12.8+) |
+| `CMAKE_CUDA_ARCHITECTURES` | 50;52;60;61;70;75;80;86;89;100 | CUDA compute capabilities (Maxwell through Blackwell) |
 | `BUILD_TESTS` | ON | Build GoogleTest tests |
 | `BUILD_BENCHMARKS` | OFF | Build Google Benchmark |
 | `CMAKE_POSITION_INDEPENDENT_CODE` | ON | Enable -fPIC (set globally) |
@@ -1153,6 +1175,38 @@ OptMathKernels/
 ---
 
 ## Recent Changes
+
+### v0.5.9 - CUDA 13 Support & Multi-Architecture Compatibility (April 2026)
+
+**CUDA 13 Support:**
+
+- **Full CUDA 13.0 compatibility** - API changes for `cudaMemPrefetchAsync` and `cudaDeviceProp`
+- **Architecture auto-detection** - CMake automatically selects appropriate architectures based on CUDA toolkit version:
+  - CUDA 13+: SM 75, 80, 86, 89, 90, 100 (Turing through Blackwell)
+  - CUDA 12.x: SM 50-89 (Maxwell through Ada)
+  - CUDA 11.x: SM 50-86 (Maxwell through Ampere)
+- **Native build option** - Use `-DOPTMATH_CUDA_NATIVE=ON` for faster compilation targeting only the local GPU
+- **Blackwell (SM 100) optimizations** - Full native support with CUDA 13
+
+**Architecture Compile Definitions:**
+
+New compile definitions for architecture-specific code paths:
+- `OPTMATH_CUDA_13_PLUS` - CUDA 13+ detected
+- `OPTMATH_CUDA_BLACKWELL` - SM 100 enabled
+- `OPTMATH_CUDA_HOPPER` - SM 90 enabled
+- `OPTMATH_CUDA_ADA` - SM 89 enabled
+- `OPTMATH_CUDA_AMPERE` - SM 80/86 enabled
+- `OPTMATH_CUDA_TURING` - SM 75 enabled
+
+**cuSolver Cholesky Improvements:**
+
+- Enhanced fallback chain with architecture-aware thresholds
+- Small matrix optimization (CPU path for matrices < 64-128 depending on architecture)
+- Improved DeviceInfo API with architecture detection helpers
+
+**Note:** CUDA 13 dropped support for SM < 75. For Maxwell/Pascal/Volta GPUs, use CUDA 12.x.
+
+---
 
 ### v0.5.8 - Blackwell (RTX 50xx) Support & Documentation (April 2026)
 
