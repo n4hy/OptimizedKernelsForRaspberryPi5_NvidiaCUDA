@@ -1176,6 +1176,30 @@ OptMathKernels/
 
 ## Recent Changes
 
+### v0.5.10 - TF32 Tolerance Fix & Verified CUDA 13 + cuSolver Cholesky (April 2026)
+
+**CUDA 13 Verified:**
+
+- **Full test pass on RTX 5090 (Blackwell)** - All 36 CUDA tests pass including 7 Cholesky tests
+- **cuSolver Cholesky decomposition** - Verified working with CUDA 13's cusolverDnSpotrf/Dpotrf
+- **SM 75 (Turing) fallback** - Architecture-aware thresholds work correctly from SM 75-100
+
+**TF32 Precision Handling:**
+
+- **MatrixGEMM test tolerance adjusted** for TF32 (TensorFloat-32) precision on Ampere+ GPUs
+- TF32 uses 19-bit mantissa vs FP32's 24-bit, allowing ~0.4% relative error
+- Tolerance updated to 1% relative + 5e-3 absolute to account for accumulated rounding in GEMM
+
+**Test Results (x86-64 with RTX 5090, CUDA 13.0):**
+
+| Backend | Tests | Status | Notes |
+|---------|-------|--------|-------|
+| CUDA | 36/36 | Pass | Full GPU acceleration with TF32 Tensor Cores |
+| Vulkan | 4/4 | Pass | Full GPU acceleration |
+| NEON/CPU | 11/11 | Pass | Eigen auto-vectorized for AVX2 |
+
+---
+
 ### v0.5.9 - CUDA 13 Support & Multi-Architecture Compatibility (April 2026)
 
 **CUDA 13 Support:**
