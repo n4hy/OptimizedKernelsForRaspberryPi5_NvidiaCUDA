@@ -1,3 +1,37 @@
+/**
+ * OptMathKernels SVE2 Complex Arithmetic
+ * Copyright (c) 2026 Dr Robert W McGwier, PhD
+ * SPDX-License-Identifier: MIT
+ *
+ * SVE2 vectorized complex number operations in both split (separate real/imag
+ * arrays) and interleaved (ri ri ri ...) formats. Leverages FCMA (Floating-
+ * point Complex Multiply-Accumulate) instructions where available.
+ *
+ * Complex Arithmetic (Split Format, Predicated):
+ *   sve2_complex_mul_f32 and sve2_complex_conj_mul_f32 using predicated
+ *   svmul_f32_z/svmls_f32_z/svmla_f32_m. sve2_complex_add_f32 and
+ *   sve2_complex_scale_f32.
+ *
+ * Complex Arithmetic (Interleaved Format, FCMA Accelerated):
+ *   sve2_complex_mul_interleaved_f32 uses svcmla_f32_z with rotations 0 and
+ *   90 for 2-instruction complex multiply (vs 4 instructions without FCMA).
+ *   sve2_complex_conj_mul_interleaved_f32 uses rotations 0 and 270. Non-FCMA
+ *   fallback uses svtbl_f32 with even/odd index extraction (svindex_u32,
+ *   svlsl_n_u32_z, svadd_n_u32_z) for manual deinterleaving.
+ *
+ * Complex Reductions:
+ *   sve2_complex_dot_f32 implements conj(a)*b with predicated accumulation and
+ *   svaddv_f32 horizontal reduction. sve2_complex_magnitude_f32 uses native
+ *   svsqrt_f32_z (no Newton-Raphson needed unlike NEON).
+ *   sve2_complex_phase_f32 falls back to scalar atan2 (not vectorizable).
+ *
+ * Complex Exponential:
+ *   sve2_complex_exp_f32 computes exp(j*phase) = cos(phase) + j*sin(phase)
+ *   via sve2_fast_cos/sin.
+ *
+ * Eigen Wrappers:
+ *   Deinterleave VectorXcf, process in split format, reinterleave.
+ */
 #include "optmath/sve2_kernels.hpp"
 #include "optmath/neon_kernels.hpp"
 #include <cmath>

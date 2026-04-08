@@ -1,3 +1,34 @@
+/**
+ * OptMathKernels NEON 2D Convolution
+ * Copyright (c) 2026 Dr Robert W McGwier, PhD
+ * SPDX-License-Identifier: MIT
+ *
+ * NEON-accelerated 2D convolution kernels including general, separable,
+ * and fixed-size optimized variants for image and signal processing.
+ *
+ * General 2D Convolution:
+ *   neon_conv2d_f32 performs valid-mode row-major convolution. Vectorizes
+ *   4 output columns per iteration via vld1q_f32/vmlaq_f32 with scalar
+ *   tail fallback for non-aligned widths.
+ *
+ * Separable 2D Convolution:
+ *   neon_conv2d_separable_f32 decomposes a KxL kernel into K+L: row pass
+ *   then column pass using neon_fir_f32. Reduces computational complexity
+ *   from O(K*L) to O(K+L) per output pixel.
+ *
+ * Optimized 3x3 Convolution:
+ *   neon_conv2d_3x3_f32 fully unrolls all 9 tap coefficients with
+ *   pre-broadcast via vdupq_n_f32. Processes 4 output columns
+ *   simultaneously for maximum throughput.
+ *
+ * Optimized 5x5 Convolution:
+ *   neon_conv2d_5x5_f32 fully unrolls all 25 tap coefficients using
+ *   the same vectorization strategy as the 3x3 variant.
+ *
+ * Eigen Wrapper:
+ *   neon_conv2d handles column-major to row-major conversion for
+ *   Eigen MatrixXf compatibility.
+ */
 #include "optmath/neon_kernels.hpp"
 #include <cstring>
 #include <vector>

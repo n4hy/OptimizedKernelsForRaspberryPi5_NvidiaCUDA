@@ -3,8 +3,106 @@
  * Copyright (c) 2026 Dr Robert W McGwier, PhD
  * SPDX-License-Identifier: MIT
  *
- * Custom CUDA kernels and cuBLAS wrappers for vector/matrix operations.
- * Optimized for NVIDIA GPUs from Pascal to Hopper architecture.
+ * Comprehensive CUDA kernel library for vector, matrix, and activation
+ * operations with cuBLAS/cuSOLVER/CUB integration and Eigen host wrappers.
+ * Optimized for NVIDIA GPUs from Pascal to Blackwell architecture.
+ *
+ * ---------------------------------------------------------------------------
+ * 1. Vector Elementwise Kernels
+ * ---------------------------------------------------------------------------
+ *    Per-element kernels using the 1-thread-per-element pattern with
+ *    BLOCK_SIZE = 256. Includes:
+ *      - kernel_vec_add_f32:   out[i] = a[i] + b[i]
+ *      - kernel_vec_mul_f32:   out[i] = a[i] * b[i]
+ *      - kernel_vec_scale_f32: out[i] = a[i] * scale
+ *      - kernel_vec_abs_f32:   out[i] = fabsf(a[i])
+ *      - kernel_vec_sqrt_f32:  out[i] = sqrtf(a[i])
+ *    Also provides kernel_vec_add_f32_vec4, a float4-vectorized add kernel
+ *    that processes 4 floats per thread via the float4 struct for coalesced
+ *    128-bit loads and stores, with a scalar tail loop for remaining elements.
+ *
+ * ---------------------------------------------------------------------------
+ * 2. Transcendental Kernels
+ * ---------------------------------------------------------------------------
+ *    Single-precision transcendental functions using CUDA fast-math device
+ *    intrinsics (__ prefix) for throughput over precision (~2 ULP accuracy):
+ *      - kernel_vec_exp_f32:    __expf(x)
+ *      - kernel_vec_log_f32:    __logf(x)
+ *      - kernel_vec_sin_f32:    __sinf(x)
+ *      - kernel_vec_cos_f32:    __cosf(x)
+ *      - kernel_vec_sincos_f32: __sincosf(x, &sin_out, &cos_out)  (fused)
+ *      - kernel_vec_tan_f32:    __tanf(x)
+ *      - kernel_vec_atan2_f32:  atan2f(y, x)  (full-precision, no intrinsic)
+ *      - kernel_vec_pow_f32:    __powf(base, exp)
+ *
+ * ---------------------------------------------------------------------------
+ * 3. Activation Function Kernels
+ * ---------------------------------------------------------------------------
+ *    Neural-network activation functions:
+ *      - kernel_sigmoid_f32:    1.0f / (1.0f + __expf(-x))
+ *      - kernel_tanh_f32:       (e^{2x}-1)/(e^{2x}+1) with saturation
+ *                               guards clamping input to [-20, +20]
+ *      - kernel_relu_f32:       fmaxf(0.0f, x)
+ *      - kernel_leaky_relu_f32: x > 0 ? x : alpha * x  (configurable alpha)
+ *      - kernel_gelu_f32:       tanh approximation:
+ *                               0.5*x*(1 + tanh(sqrt(2/pi)*(x + 0.044715*x^3)))
+ *    Softmax uses shared memory parallel reduction in three passes:
+ *      (1) find row-wise max, (2) compute exp(x_i - max), (3) sum and
+ *      normalize. Falls back to CPU when n > BLOCK_SIZE.
+ *
+ * ---------------------------------------------------------------------------
+ * 4. Matrix Kernels
+ * ---------------------------------------------------------------------------
+ *      - kernel_mat_add_f32 / kernel_mat_scale_f32: treat M x N matrix as
+ *        a flat 1D array for elementwise add and scalar multiply.
+ *      - kernel_mat_transpose_naive_f32: maps column-major A(i,j) = A[i+j*M]
+ *        to out(j,i) = out[j+i*N]; one thread per element.
+ *      - kernel_mat_transpose_tiled_f32: 32 x 32 shared memory tiles with +1
+ *        column padding to avoid bank conflicts. Uses BLOCK_ROWS = 8 so each
+ *        thread loads multiple rows for coalesced global reads, then writes
+ *        the transposed tile with coalesced stores.
+ *
+ * ---------------------------------------------------------------------------
+ * 5. cuBLAS Wrappers
+ * ---------------------------------------------------------------------------
+ *    Thin C wrappers around cuBLAS routines with column-major layout:
+ *      - cuda_mat_mul_f32:     cublasSgemm  (C = alpha*op(A)*op(B) + beta*C)
+ *      - cuda_vec_dot_f32:     cublasSdot   (scalar dot product)
+ *      - cuda_vec_norm_f32:    cublasSnrm2  (L2 norm)
+ *      - cuda_mat_vec_mul_f32: cublasSgemv  (y = alpha*A*x + beta*y)
+ *
+ * ---------------------------------------------------------------------------
+ * 6. CUB Parallel Reductions
+ * ---------------------------------------------------------------------------
+ *    Device-wide reductions using the CUB library two-pass pattern:
+ *      (1) query temporary storage size, (2) allocate, (3) execute.
+ *      - cuda_vec_sum_f32: cub::DeviceReduce::Sum
+ *      - cuda_vec_max_f32: cub::DeviceReduce::Max
+ *      - cuda_vec_min_f32: cub::DeviceReduce::Min
+ *
+ * ---------------------------------------------------------------------------
+ * 7. Eigen Vector/Matrix Wrappers
+ * ---------------------------------------------------------------------------
+ *    Host-side convenience functions that manage the full GPU lifecycle:
+ *    cudaMalloc, cudaMemcpy (H2D / D2H), kernel launch, and cleanup via
+ *    error-checked lambdas. Graceful CPU fallback on any CUDA error.
+ *    Wraps: cuda_vec_add, cuda_vec_mul, cuda_vec_scale, cuda_vec_dot,
+ *    cuda_reduce_sum/max/min, cuda_vec_norm, cuda_exp/log/sin/cos,
+ *    cuda_sigmoid/tanh/relu, cuda_mat_mul/add/scale/transpose/vec_mul.
+ *
+ * ---------------------------------------------------------------------------
+ * 8. cuSOLVER Cholesky Decomposition
+ * ---------------------------------------------------------------------------
+ *    Dense Cholesky factorization and related solvers:
+ *      - cuda_cholesky:         cusolverDnSpotrf (single-precision A = L*L^T,
+ *                               CUBLAS_FILL_MODE_LOWER)
+ *      - cuda_cholesky_f64:     cusolverDnDpotrf (double-precision)
+ *      - cuda_cholesky_solve:   cusolverDnSpotrs (solve L*L^T * x = b)
+ *      - cuda_cholesky_inverse: solves L*L^T * X = I to compute A^{-1}
+ *    Architecture-aware: skips GPU for unsupported architectures via
+ *    is_device_supported(). Uses CPU fallback for small matrices (threshold:
+ *    64 for Ampere+, 128 for older GPUs). All routines zero the upper
+ *    triangle of the result since cuSOLVER leaves it unchanged.
  */
 
 #include "optmath/cuda_backend.hpp"

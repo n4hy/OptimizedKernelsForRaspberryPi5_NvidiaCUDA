@@ -1,3 +1,52 @@
+/**
+ * OptMathKernels NEON Radar Signal Processing
+ * Copyright (c) 2026 Dr Robert W McGwier, PhD
+ * SPDX-License-Identifier: MIT
+ *
+ * NEON-accelerated radar signal processing kernels including window
+ * functions, correlation, detection, clutter filtering, Doppler
+ * processing, and beamforming.
+ *
+ * Window Functions:
+ *   generate_window_f32 for Rectangular, Hamming, Hanning, Blackman,
+ *   Blackman-Harris, and Kaiser windows. Kaiser uses series approximation
+ *   of modified Bessel I0. apply_window_f32 for real signals,
+ *   apply_window_complex_f32 for complex signals (vmulq_f32).
+ *
+ * Cross-Correlation:
+ *   xcorr_f32 (real, output length = nx + ny - 1) and xcorr_complex_f32
+ *   (complex, x*conj(y)) with NEON-accelerated inner dot products
+ *   (vmlaq_f32, vaddvq_f32).
+ *
+ * Cross-Ambiguity Function (CAF):
+ *   caf_f32 computes 2D range-Doppler map. Outer loop iterates Doppler
+ *   bins with phase rotation via neon_fast_cos/sin_f32 and
+ *   neon_complex_mul_f32. Inner loop handles range delays with vectorized
+ *   complex correlation (vmlaq_f32/vmlsq_f32 accumulation).
+ *
+ * CFAR Detection:
+ *   cfar_ca_f32 - 1D Cell-Averaging with leading/lagging windows.
+ *   cfar_2d_f32 - 2D with summed-area table in double precision for
+ *     O(1) rectangular sums.
+ *   cfar_os_f32 - 1D Order-Statistic using std::sort for k-th element.
+ *
+ * Clutter Filtering:
+ *   nlms_filter_f32 - NLMS adaptive filter with sequential weight updates.
+ *   projection_clutter_f32 - Subspace projection P = I - U*U^H using
+ *   vectorized axpy operations.
+ *
+ * Doppler Processing:
+ *   doppler_fft_f32 - DFT per range bin.
+ *   mti_filter_f32 - FIR along pulse dimension for static clutter
+ *   suppression.
+ *
+ * Beamforming:
+ *   beamform_delay_sum_f32 - Integer-delay-and-sum with per-channel
+ *     weights.
+ *   beamform_phase_f32 - Complex phase-shift with per-channel phase
+ *     rotation via neon_fast_cos/sin and vectorized complex
+ *     multiply-accumulate.
+ */
 #include "optmath/radar_kernels.hpp"
 #include "optmath/neon_kernels.hpp"
 #include <cmath>

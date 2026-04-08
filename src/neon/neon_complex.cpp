@@ -1,3 +1,37 @@
+/**
+ * OptMathKernels NEON Complex Arithmetic
+ * Copyright (c) 2026 Dr Robert W McGwier, PhD
+ * SPDX-License-Identifier: MIT
+ *
+ * NEON-accelerated complex number operations supporting both split
+ * (separate real/imag arrays) and interleaved IQ formats.
+ *
+ * Complex Arithmetic (Split Format):
+ *   neon_complex_mul_f32 computes (ar*br - ai*bi) + j*(ar*bi + ai*br)
+ *   via vmulq_f32/vmlaq_f32/vmlsq_f32. neon_complex_conj_mul_f32 for
+ *   cross-correlation: a*conj(b). neon_complex_add_f32 and
+ *   neon_complex_scale_f32 for basic operations.
+ *
+ * Complex Arithmetic (Interleaved IQ Format):
+ *   neon_complex_mul_interleaved_f32 uses vld2q_f32 to deinterleave
+ *   [re,im,re,im,...], computes products, then vst2q_f32 to reinterleave.
+ *   neon_complex_conj_mul_interleaved_f32 for conjugate multiply.
+ *
+ * Complex Reductions:
+ *   neon_complex_dot_f32 implements conj(a)*b with dual accumulators.
+ *   neon_complex_magnitude_f32 uses fast reciprocal sqrt (vrsqrteq_f32)
+ *   with Newton-Raphson refinement (vrsqrtsq_f32) then multiply for
+ *   |z| = re / rsqrt(re^2 + im^2), with zero masking via
+ *   vceqzq_f32/vbslq_f32.
+ *
+ * Complex Exponential:
+ *   neon_complex_exp_f32 computes exp(j*phase) = cos(phase) + j*sin(phase)
+ *   using the vectorized neon_fast_cos/sin transcendental approximations.
+ *
+ * Eigen Wrappers:
+ *   Deinterleave VectorXcf to split format, process, and reinterleave
+ *   for transparent Eigen complex vector support.
+ */
 #include "optmath/neon_kernels.hpp"
 #include <cmath>
 

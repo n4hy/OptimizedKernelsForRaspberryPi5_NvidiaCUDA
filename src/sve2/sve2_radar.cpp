@@ -1,3 +1,35 @@
+/**
+ * OptMathKernels SVE2 Radar Signal Processing
+ * Copyright (c) 2026 Dr Robert W McGwier, PhD
+ * SPDX-License-Identifier: MIT
+ *
+ * SVE2 vectorized radar signal processing kernels including cross-ambiguity,
+ * cross-correlation, beamforming, and window application.
+ *
+ * Cross-Ambiguity Function (CAF):
+ *   sve2_caf_f32 computes a 2D range-Doppler surface. The Doppler loop
+ *   applies phase rotation via sve2_fast_cos/sin_f32 with vectorized Doppler
+ *   shift. The range loop uses predicated complex conjugate multiply-
+ *   accumulate (svmla_f32_m/svmls_f32_m merging semantics) for zero-overhead
+ *   tail handling. Bounds checking prevents unsigned arithmetic underflow.
+ *
+ * Cross-Correlation:
+ *   sve2_xcorr_f32 (real) and sve2_xcorr_complex_f32 (complex x*conj(y))
+ *   with predicated dot product inner loops using merging predication
+ *   (svmla_f32_m preserves inactive lane values). Output size = nx + ny - 1.
+ *
+ * Beamforming:
+ *   sve2_beamform_phase_f32 phase-shift beamformer with per-channel phase
+ *   rotation and optional weights. Vectorized complex multiply-accumulate
+ *   across the samples dimension.
+ *
+ * Window Application:
+ *   sve2_apply_window_f32 (real) and sve2_apply_window_complex_f32 (complex)
+ *   using predicated element-wise multiply svmul_f32_z.
+ *
+ * Eigen Wrapper:
+ *   sve2_caf returns MatrixXf via deinterleaved VectorXcf input processing.
+ */
 #include "optmath/sve2_kernels.hpp"
 #include "optmath/radar_kernels.hpp"
 #include "optmath/neon_kernels.hpp"

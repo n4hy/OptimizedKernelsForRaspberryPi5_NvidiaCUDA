@@ -1,5 +1,17 @@
-// Runtime SVE2 detection — compiled WITHOUT SVE2 flags so it's safe to call
-// on any AArch64 hardware.
+/**
+ * OptMathKernels SVE2 Runtime Hardware Detection
+ * Copyright (c) 2026 Dr Robert W McGwier, PhD
+ * SPDX-License-Identifier: MIT
+ *
+ * Runtime SVE2 hardware detection module. Compiled WITHOUT -march=sve2 flags
+ * so it can execute safely on any AArch64 hardware.
+ *
+ * Runtime SVE2 Hardware Detection:
+ *   is_available() uses getauxval(AT_HWCAP2) & HWCAP2_SVE2 bitmask to detect
+ *   SVE2 support at runtime. The result is cached in a static const bool for
+ *   one-time detection. Returns true only when both the OPTMATH_USE_SVE2
+ *   compile flag is set AND hardware reports SVE2 capability.
+ */
 #include "optmath/sve2_kernels.hpp"
 
 #if defined(__aarch64__)

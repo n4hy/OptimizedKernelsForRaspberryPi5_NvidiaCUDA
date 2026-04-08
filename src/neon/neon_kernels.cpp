@@ -1,3 +1,48 @@
+/**
+ * OptMathKernels NEON Core Kernels
+ * Copyright (c) 2026 Dr Robert W McGwier, PhD
+ * SPDX-License-Identifier: MIT
+ *
+ * Core NEON-accelerated math kernels for ARMv8-A (AArch64).
+ *
+ * Core Vector Operations:
+ *   Dot product with 4 independent accumulators designed for Cortex-A76
+ *   dual FMA pipeline utilization. Vector add, sub, mul, div using 4-way
+ *   SIMD via vld1q_f32/vst1q_f32/vaddq_f32/vmulq_f32/vdivq_f32. All
+ *   operations include scalar tail handling for non-multiple-of-4 lengths.
+ *
+ * Reduction Operations:
+ *   Sum (vaddvq_f32), max (vmaxvq_f32), min (vminvq_f32) with 4-way
+ *   unrolled accumulation for reduced loop overhead.
+ *
+ * Matrix Operations:
+ *   4x4 GEMM microkernel using vmlaq_n_f32 for rank-1 updates. Tiled
+ *   GEMM with block partitioning. Includes mat_scale, mat_transpose,
+ *   and mat_vec_mul.
+ *
+ * FIR Filter:
+ *   Sliding-window dot product using neon_dot_f32 as the inner kernel.
+ *
+ * Activation Functions:
+ *   ReLU via vmaxq_f32(zero, x). Scalar sigmoid and tanh implementations
+ *   for backward compatibility.
+ *
+ * Vectorized Transcendentals (6th-order Minimax Polynomials):
+ *   neon_fast_exp_f32 - Range reduction x=k*ln2+f with integer exponent
+ *     reconstruction via bit manipulation (vcvtq_s32_f32, vshlq_n_s32,
+ *     vreinterpretq_f32_s32) and 6-coefficient Horner polynomial.
+ *     Accuracy ~12%.
+ *   neon_fast_sin_f32 - Pi-based range reduction with 5-coefficient
+ *     Chebyshev polynomial and sign correction via vbslq_f32.
+ *   neon_fast_cos_f32 - Computed as sin(x + pi/2).
+ *   neon_fast_sigmoid_f32 - 1/(1+exp(-x)) with input clamping [-20, 20].
+ *   neon_fast_tanh_f32 - 2*sigmoid(2x)-1 with clamping [-10, 10].
+ *   Sin/cos accuracy ~1e-5, sigmoid accuracy ~3%.
+ *
+ * Eigen Wrappers:
+ *   Complete set of wrappers accepting Eigen::VectorXf and Eigen::MatrixXf
+ *   for seamless integration with Eigen-based applications.
+ */
 #include "optmath/neon_kernels.hpp"
 #include <cmath>
 #include <cstring>

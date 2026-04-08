@@ -1,3 +1,38 @@
+/**
+ * OptMathKernels NEON Optimized GEMM
+ * Copyright (c) 2026 Dr Robert W McGwier, PhD
+ * SPDX-License-Identifier: MIT
+ *
+ * High-performance cache-blocked GEMM implementation using NEON intrinsics,
+ * following the Goto BLAS three-level blocking strategy with an 8x8
+ * microkernel optimized for Cortex-A76 and Cortex-A720 cache hierarchies.
+ *
+ * Cache Blocking Infrastructure:
+ *   Runtime MC/KC/NC parameters tuned per target: Cortex-A76 (Pi 5: 64KB
+ *   L1, 512KB L2, 2MB L3) uses MC=384, KC=512, NC=4096. Cortex-A720
+ *   (CIX P1: 12MB L3) uses MC=512, KC=768, NC=8192. Thread-local aligned
+ *   buffers for packed panels.
+ *
+ * 8x8 Microkernel:
+ *   micro_kernel_8x8 uses column-oriented accumulators for efficient
+ *   column-major store. Rank-1 updates via vmlaq_laneq_f32 (FMA with
+ *   scalar lane broadcast). 16 vector stores vs 64 scalar stores.
+ *   MR = NR = 8.
+ *
+ * Data Packing:
+ *   pack_A_panel packs MR=8 row strips for contiguous sequential access.
+ *   pack_B_panel packs NR=8 column strips. Both handle edge cases with
+ *   zero-fill padding.
+ *
+ * Three-Level Cache-Blocked GEMM:
+ *   neon_gemm_blocked_f32 implements Goto-style GEMM: Level 1 (NC x KC)
+ *   blocks B into L2, Level 2 (MC x KC) blocks A into L3, Level 3
+ *   invokes 8x8 microkernels. Edge panels handled with scalar fallback.
+ *
+ * Eigen Wrapper:
+ *   neon_gemm_blocked with automatic column-major data pointer extraction
+ *   from Eigen::MatrixXf.
+ */
 #include "optmath/neon_kernels.hpp"
 #include "optmath/platform.hpp"
 #include <cstring>

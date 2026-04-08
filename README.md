@@ -1103,19 +1103,37 @@ OptMathKernels/
 │   ├── cuda_backend.hpp      # CUDA API declarations (242 functions)
 │   └── radar_kernels.hpp     # Radar processing API (48 functions)
 ├── src/
-│   ├── neon/
-│   │   ├── neon_kernels.cpp        # Core NEON + transcendentals
-│   │   ├── neon_complex.cpp        # Complex number operations
-│   │   ├── neon_gemm_optimized.cpp # Cache-blocked GEMM (runtime-tuned)
-│   │   ├── neon_radar.cpp          # Radar signal processing
-│   │   ├── neon_resample.cpp       # Polyphase resampler
-│   │   ├── neon_iir.cpp            # Biquad IIR filter
-│   │   ├── neon_conv2d.cpp         # 2D convolution
-│   │   └── neon_linalg.cpp         # Dense linear algebra (Cholesky, LU, QR, solve, inverse)
-│   ├── sve2/
-│   │   ├── sve2_kernels.cpp        # SVE2 vector ops, transcendentals, GEMM, I8MM
-│   │   ├── sve2_complex.cpp        # SVE2/FCMA complex operations
-│   │   └── sve2_radar.cpp          # SVE2 radar DSP (CAF, xcorr, beamform)
+│   ├── neon/                           # ARM NEON (128-bit SIMD) kernels
+│   │   ├── neon_kernels.cpp        # Core vector ops (4-accumulator dot, add/sub/mul/div),
+│   │   │                           #   reductions (sum/max/min), 4x4 GEMM microkernel,
+│   │   │                           #   FIR filter, ReLU, vectorized transcendentals
+│   │   │                           #   (6th-order minimax exp/sin/cos/sigmoid/tanh)
+│   │   ├── neon_complex.cpp        # Split & interleaved complex arithmetic (vld2q/vst2q),
+│   │   │                           #   complex dot product, magnitude (Newton-Raphson rsqrt),
+│   │   │                           #   phase, complex exponential
+│   │   ├── neon_gemm_optimized.cpp # 3-level Goto-style cache-blocked GEMM with 8x8
+│   │   │                           #   microkernel (vmlaq_laneq_f32 rank-1 updates),
+│   │   │                           #   runtime A76/A720 cache tuning (MC/KC/NC)
+│   │   ├── neon_radar.cpp          # Window functions (Hamming-Kaiser), CAF with vectorized
+│   │   │                           #   Doppler shift, CFAR (CA/2D-SAT/OS), NLMS adaptive
+│   │   │                           #   filter, projection clutter, DFT, MTI, beamforming
+│   │   ├── neon_resample.cpp       # Polyphase L:M rational resampler with NEON FIR
+│   │   ├── neon_iir.cpp            # Biquad IIR DF2T, cascade, Bristow-Johnson design
+│   │   │                           #   (lowpass/highpass/bandpass/notch)
+│   │   ├── neon_conv2d.cpp         # General NxM, separable, unrolled 3x3 & 5x5 convolution
+│   │   └── neon_linalg.cpp         # TRSV/TRSM, Cholesky, LU (partial pivot), QR
+│   │                               #   (Householder), general/SPD solve, matrix inverse
+│   ├── sve2/                           # ARM SVE2 (scalable vector) kernels
+│   │   ├── sve2_kernels.cpp        # Predicated vector ops (svwhilelt_b32 loops),
+│   │   │                           #   transcendentals (predicated Horner/Chebyshev),
+│   │   │                           #   8x8 GEMM microkernel (MC=256/KC=512/NC=1024),
+│   │   │                           #   I8MM int8 GEMM (svmmla_s32), FIR filter
+│   │   ├── sve2_complex.cpp        # FCMA-accelerated complex multiply (svcmla rotations
+│   │   │                           #   0/90/270, 2 instructions vs 4), split & interleaved
+│   │   │                           #   formats, complex dot/magnitude (svsqrt)/phase/exp
+│   │   ├── sve2_radar.cpp          # CAF with predicated complex MAC (svmla_f32_m merging),
+│   │   │                           #   cross-correlation, phase-shift beamforming, windowing
+│   │   └── sve2_detect.cpp         # Runtime SVE2 detection via getauxval(AT_HWCAP2)
 │   ├── platform/
 │   │   └── platform.cpp            # CPU topology, thread affinity, cache detection
 │   ├── vulkan/
@@ -1129,11 +1147,25 @@ OptMathKernels/
 │   │       ├── caf_doppler_shift.comp.glsl
 │   │       ├── cfar_2d.comp.glsl
 │   │       └── ... (33 more shaders)
-│   └── cuda/
-│       ├── cuda_backend.cpp        # Context, memory management
-│       ├── cuda_kernels.cu         # Vector ops, transcendentals
-│       ├── cuda_complex.cu         # Complex ops, FFT
-│       └── cuda_radar.cu           # CAF, CFAR, beamforming
+│   └── cuda/                           # NVIDIA CUDA GPU kernels
+│       ├── cuda_backend.cpp        # Context, device enumeration, memory management
+│       ├── cuda_kernels.cu         # Vector elementwise (float4 vectorized), transcendentals
+│       │                           #   (__expf/__sinf/__cosf/__sincosf fast-math intrinsics),
+│       │                           #   activation functions (sigmoid/tanh/ReLU/GELU/softmax),
+│       │                           #   matrix ops (tiled transpose with bank-conflict padding),
+│       │                           #   cuBLAS (Sgemm/Sdot/Snrm2/Sgemv), CUB reductions
+│       │                           #   (DeviceReduce::Sum/Max/Min), cuSOLVER Cholesky
+│       │                           #   (Spotrf/Dpotrf/Spotrs, architecture-aware thresholds)
+│       ├── cuda_complex.cu         # Split-format complex arithmetic, warp-level dot product
+│       │                           #   (__shfl_down_sync reduction + atomicAdd), format
+│       │                           #   conversion (interleave/deinterleave), convolution
+│       │                           #   (1D naive/shared-memory, 2D), cuFFT wrappers
+│       │                           #   (C2C 1D/batch/2D via cufftPlan1d/PlanMany/Plan2d)
+│       └── cuda_radar.cu           # Window functions (Hamming-Blackman-Harris), GPU-resident
+│                                   #   CAF pipeline (Doppler shift + FFT + conj-mul + IFFT),
+│                                   #   CFAR (1D CA + 2D), Bartlett beamformer with shared-
+│                                   #   memory reduction, ULA steering vectors, NLMS (CPU),
+│                                   #   projection clutter cancellation
 ├── tests/
 │   ├── test_neon_kernels.cpp       # NEON unit tests
 │   ├── test_neon_complex.cpp       # Complex operation tests
@@ -1175,6 +1207,43 @@ OptMathKernels/
 ---
 
 ## Recent Changes
+
+### v0.5.11 - Comprehensive Kernel Documentation (April 2026)
+
+**Source-Level Documentation:**
+
+Every kernel source file now has a thorough header comment documenting all functional blocks, specific API/intrinsic usage, and algorithmic techniques. This makes the codebase self-documenting for contributors and users reading the source.
+
+**CUDA Kernels (3 files):**
+
+- **`cuda_kernels.cu`**: 8 documented blocks — vector elementwise (float4 vectorized), transcendentals (CUDA `__expf`/`__sinf`/`__cosf`/`__sincosf`/`__tanf`/`__powf` fast-math intrinsics), activation functions (sigmoid/tanh/ReLU/leaky-ReLU/GELU/softmax with shared-memory reduction), matrix ops (tiled transpose with +1 bank-conflict padding), cuBLAS wrappers (`cublasSgemm`/`cublasSdot`/`cublasSnrm2`/`cublasSgemv`), CUB parallel reductions (`cub::DeviceReduce::Sum/Max/Min`), Eigen host wrappers (error-checked cudaMalloc/cudaMemcpy with CPU fallback), cuSOLVER Cholesky (`cusolverDnSpotrf`/`cusolverDnDpotrf`/`cusolverDnSpotrs` with architecture-aware GPU/CPU thresholds)
+- **`cuda_complex.cu`**: 7 documented blocks — split-format complex arithmetic, complex analysis kernels, warp-level complex dot product (`__shfl_down_sync` + `atomicAdd`), format conversion (interleave/deinterleave), convolution (1D naive/shared-memory template, 2D), cuFFT wrappers (`cufftPlan1d`/`cufftPlanMany`/`cufftPlan2d` with `CUFFT_C2C`), Eigen complex wrappers
+- **`cuda_radar.cu`**: 7 documented blocks — window function generators, GPU-resident CAF pipeline (Doppler shift via `__sincosf` + FFT + conj-multiply + IFFT + magnitude extraction), CFAR detection (1D CA-CFAR + 2D with guard cells), Doppler windowing, Bartlett beamformer (ULA steering vectors + shared-memory spectrum reduction), NLMS adaptive filter (CPU, sequential weight updates), projection clutter cancellation
+
+**NEON Kernels (8 files):**
+
+- **`neon_kernels.cpp`**: Vector ops with 4-accumulator FMA pipeline utilization, vectorized transcendentals (6th-order minimax polynomials with IEEE754 bit manipulation for exponent reconstruction)
+- **`neon_complex.cpp`**: Split and interleaved (`vld2q_f32`/`vst2q_f32`) complex arithmetic, Newton-Raphson rsqrt magnitude (`vrsqrteq_f32`/`vrsqrtsq_f32`)
+- **`neon_gemm_optimized.cpp`**: 3-level Goto-style cache-blocked GEMM, 8x8 microkernel with `vmlaq_laneq_f32` rank-1 updates, runtime A76/A720 cache parameter tuning
+- **`neon_radar.cpp`**: Window functions (including Kaiser with Bessel I0), CAF, CFAR (CA/2D-SAT/OS), NLMS, projection clutter, DFT, MTI, delay-sum and phase-shift beamforming
+- **`neon_conv2d.cpp`**: General, separable, fully-unrolled 3x3 and 5x5 convolution
+- **`neon_iir.cpp`**: Biquad Direct Form II Transposed, cascade, Bristow-Johnson filter design
+- **`neon_linalg.cpp`**: TRSV/TRSM, Cholesky (A=L*L^T), LU (partial pivot), QR (Householder), solvers, matrix inverse
+- **`neon_resample.cpp`**: Polyphase L:M rational rate conversion with streaming delay line
+
+**SVE2 Kernels (4 files):**
+
+- **`sve2_kernels.cpp`**: Predicated vector ops (`svwhilelt_b32` loops), transcendentals (predicated Horner/Chebyshev polynomials), 8x8 GEMM microkernel (MC=256/KC=512/NC=1024 for A720 12MB L3), I8MM int8 GEMM (`svmmla_s32`)
+- **`sve2_complex.cpp`**: FCMA-accelerated complex multiply (`svcmla_f32_z` rotations 0/90/270 for 2-instruction complex multiply), non-FCMA fallback with `svtbl_f32` deinterleaving, native `svsqrt_f32_z` magnitude
+- **`sve2_radar.cpp`**: CAF with predicated complex MAC (`svmla_f32_m` merging semantics), cross-correlation, phase-shift beamforming
+- **`sve2_detect.cpp`**: Runtime SVE2 detection via `getauxval(AT_HWCAP2) & HWCAP2_SVE2`
+
+**README Updated:**
+
+- File Structure section now includes per-file descriptions of all functional blocks and key APIs
+- Each source file entry documents the specific intrinsics, algorithms, and CUDA/cuBLAS/cuFFT/cuSOLVER calls used
+
+---
 
 ### v0.5.10 - TF32 Tolerance Fix & Verified CUDA 13 + cuSolver Cholesky (April 2026)
 

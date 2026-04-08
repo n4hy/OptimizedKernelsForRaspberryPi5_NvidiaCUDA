@@ -1,3 +1,26 @@
+/**
+ * OptMathKernels NEON Polyphase Resampler
+ * Copyright (c) 2026 Dr Robert W McGwier, PhD
+ * SPDX-License-Identifier: MIT
+ *
+ * NEON-accelerated polyphase rational rate resampler for sample rate
+ * conversion of real-valued signals.
+ *
+ * Polyphase Filter Initialization:
+ *   neon_resample_init decomposes a prototype FIR filter into L polyphase
+ *   phases, storing coefficients in time-reversed order for direct dot
+ *   product computation without index reversal at runtime.
+ *
+ * Polyphase Rational Resampler:
+ *   neon_resample_f32 implements L:M rational rate conversion. Uses a
+ *   phase accumulator to drive the output rate. Delay line managed via
+ *   memmove shift buffer. Per-output-sample operation: advance phase,
+ *   shift new input into delay line when phase wraps, compute polyphase
+ *   FIR output via neon_dot_f32.
+ *
+ * Eigen Wrapper:
+ *   neon_resample with automatic output size calculation (n_in * L / M).
+ */
 #include "optmath/neon_kernels.hpp"
 #include <cstring>
 #include <algorithm>

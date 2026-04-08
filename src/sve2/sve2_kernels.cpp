@@ -1,3 +1,48 @@
+/**
+ * OptMathKernels SVE2 Core Kernels
+ * Copyright (c) 2026 Dr Robert W McGwier, PhD
+ * SPDX-License-Identifier: MIT
+ *
+ * Core SVE2 vectorized math kernels targeting AArch64 SVE2-capable processors
+ * (Cortex-A720 / Orange Pi 5 Plus and similar).
+ *
+ * Core Vector Operations (Predicated):
+ *   All loops use svwhilelt_b32/svptest_any count-up predication, eliminating
+ *   scalar tail code entirely. Includes sve2_dot_f32 (predicated FMA with
+ *   svaddv_f32 horizontal reduction), sve2_add/sub/mul/div_f32 (svadd/svsub/
+ *   svmul/svdiv_f32_z zeroing predication), sve2_norm_f32 (dot self + sqrtf),
+ *   and sve2_reduce_sum/max/min_f32 (svaddv/svmaxv/svminv_f32). Division uses
+ *   a sign-preserving epsilon guard.
+ *
+ * Vectorized Transcendentals (Predicated Polynomial Approximation):
+ *   sve2_fast_exp_f32 uses range reduction x=k*ln2+f with svrintn_f32_z
+ *   rounding, integer exponent reconstruction via svcvt_s32_f32_z/
+ *   svlsl_n_s32_z/svreinterpret_f32_s32, and a 6-coefficient Horner
+ *   polynomial with svmla_n_f32_z. sve2_fast_sin_f32 uses pi-based range
+ *   reduction with a 5-coefficient Chebyshev polynomial and predicated sign
+ *   correction via svneg_f32_m. sve2_fast_cos_f32 = sin(x+pi/2).
+ *   sve2_fast_sigmoid_f32 = 1/(1+exp(-x)) with clamping via svmin/svmax_f32_m.
+ *   sve2_fast_tanh_f32 = 2*sigmoid(2x)-1.
+ *
+ * Cache-Blocked GEMM with 8x8 Microkernel:
+ *   micro_kernel_8x8_sve2 uses column-oriented accumulators (8 columns x 2
+ *   vector halves for VL-agnostic design). pack_A_panel_sve2 packs MR=8 row
+ *   strips with predicated loads. pack_B_panel_sve2 packs NR=8 column strips.
+ *   sve2_gemm_blocked_f32 implements 3-level Goto-style blocking: MC=256,
+ *   KC=512, NC=1024 tuned for Cortex-A720 12MB L3 cache on Orange Pi 5 Plus.
+ *
+ * I8MM Integer Matrix Multiply:
+ *   sve2_gemm_i8mm uses svmmla_s32 for 2x2 output tiles processing K in
+ *   chunks of 8. Supports quantized int8 inference with scale/zero-point
+ *   dequantization.
+ *
+ * FIR Filter:
+ *   sve2_fir_f32 implements valid convolution as a series of predicated dot
+ *   products.
+ *
+ * Eigen Wrappers:
+ *   Complete set for VectorXf/MatrixXf with data pointer extraction.
+ */
 #include "optmath/sve2_kernels.hpp"
 #include "optmath/neon_kernels.hpp"
 #include "optmath/platform.hpp"

@@ -3,8 +3,82 @@
  * Copyright (c) 2026 Dr Robert W McGwier, PhD
  * SPDX-License-Identifier: MIT
  *
- * CUDA kernels for complex number operations, FFT, and convolution.
- * Optimized for signal processing applications.
+ * CUDA kernels for complex arithmetic, analysis, dot products, format
+ * conversion, convolution, and FFT operations. All complex data uses
+ * split real/imaginary arrays on the GPU; Eigen VectorXcf wrappers
+ * handle deinterleaving and reinterleaving automatically.
+ *
+ * ---------------------------------------------------------------------------
+ * 1. Complex Arithmetic Kernels (Split Format)
+ * ---------------------------------------------------------------------------
+ *    Operate on separate real[] and imaginary[] arrays (one thread per element):
+ *      - kernel_complex_mul_f32:      c = a * b
+ *            re: ar*br - ai*bi,  im: ar*bi + ai*br
+ *      - kernel_complex_conj_mul_f32: c = a * conj(b)
+ *            re: ar*br + ai*bi,  im: ai*br - ar*bi
+ *      - kernel_complex_add_f32:      c = a + b  (elementwise)
+ *      - kernel_complex_scale_f32:    c = alpha * a  (real scalar multiply)
+ *
+ * ---------------------------------------------------------------------------
+ * 2. Complex Analysis Kernels
+ * ---------------------------------------------------------------------------
+ *      - kernel_complex_magnitude_f32:         |z| = sqrtf(re^2 + im^2)
+ *      - kernel_complex_magnitude_squared_f32: |z|^2 = re^2 + im^2
+ *            (avoids the sqrt for power-spectrum and comparison use cases)
+ *      - kernel_complex_phase_f32:             arg(z) = atan2f(im, re)
+ *      - kernel_complex_exp_f32:               exp(j*phase) = cos + j*sin
+ *            via __sincosf fast-math intrinsic
+ *
+ * ---------------------------------------------------------------------------
+ * 3. Complex Dot Product with Warp-Level Reduction
+ * ---------------------------------------------------------------------------
+ *    kernel_complex_dot_reduce_f32 computes the Eigen-convention dot product
+ *    dot(a, b) = sum( conj(a_i) * b_i ).
+ *      - Grid-stride loop with 2x manual unrolling for ILP.
+ *      - Block-level tree reduction in extern __shared__ memory sized as
+ *        2 * blockDim.x floats (interleaved real and imaginary partial sums).
+ *      - Final warp reduction via __shfl_down_sync (warp shuffle intrinsic)
+ *        for the last 32 threads, avoiding shared memory bank conflicts.
+ *      - Cross-block accumulation into global result via atomicAdd.
+ *
+ * ---------------------------------------------------------------------------
+ * 4. Complex Format Conversion Kernels
+ * ---------------------------------------------------------------------------
+ *      - kernel_deinterleave_complex_f32:
+ *            [re0, im0, re1, im1, ...] -> separate re[] and im[] arrays
+ *      - kernel_interleave_complex_f32:
+ *            separate re[] and im[] arrays -> [re0, im0, re1, im1, ...]
+ *
+ * ---------------------------------------------------------------------------
+ * 5. Convolution Kernels
+ * ---------------------------------------------------------------------------
+ *      - kernel_conv1d_f32: naive 1D linear convolution, one thread per
+ *            output sample. output_len = signal_len + kernel_len - 1.
+ *      - kernel_conv1d_shared_f32<KERNEL_SIZE>: template kernel using shared
+ *            memory for both the signal halo region and kernel coefficients,
+ *            reducing global memory traffic for small fixed-size kernels.
+ *      - kernel_conv2d_f32: naive 2D convolution in valid mode with row-major
+ *            layout. Output size = (img_h - kern_h + 1) x (img_w - kern_w + 1).
+ *
+ * ---------------------------------------------------------------------------
+ * 6. FFT Wrappers (cuFFT)
+ * ---------------------------------------------------------------------------
+ *      - cuda_fft_1d_f32:       cufftPlan1d with CUFFT_C2C (single 1D FFT)
+ *      - cuda_fft_1d_batch_f32: cufftPlanMany for batched 1D transforms
+ *      - cuda_fft_2d_f32:       cufftPlan2d with CUFFT_C2C (single 2D FFT)
+ *      - cuda_fft / cuda_ifft:  Eigen VectorXcf wrappers; the IFFT applies
+ *            1/N normalization on the CPU after the inverse transform.
+ *
+ * ---------------------------------------------------------------------------
+ * 7. Eigen Complex Wrappers
+ * ---------------------------------------------------------------------------
+ *    Host functions managing the full GPU lifecycle (cudaMalloc, cudaMemcpy
+ *    H2D/D2H, kernel launch, cleanup). Each deinterleaves the input
+ *    Eigen::VectorXcf into split real/imaginary arrays for GPU processing,
+ *    then reinterleaves the result:
+ *      - cuda_complex_mul, cuda_complex_conj_mul
+ *      - cuda_complex_dot
+ *      - cuda_complex_magnitude, cuda_complex_phase
  */
 
 #include "optmath/cuda_backend.hpp"

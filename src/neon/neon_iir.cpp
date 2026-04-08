@@ -1,3 +1,30 @@
+/**
+ * OptMathKernels NEON IIR Biquad Filters
+ * Copyright (c) 2026 Dr Robert W McGwier, PhD
+ * SPDX-License-Identifier: MIT
+ *
+ * Biquad IIR filter implementation with cascade support and filter
+ * design functions based on the Robert Bristow-Johnson Audio EQ Cookbook.
+ *
+ * Biquad IIR Filter (Direct Form II Transposed):
+ *   neon_biquad_f32 implements y[n] = b0*x[n] + s1, s1 = b1*x[n] -
+ *   a1*y[n] + s2, s2 = b2*x[n] - a2*y[n]. Scalar implementation only
+ *   as the feedback dependency prevents SIMD vectorization across samples.
+ *
+ * Biquad Cascade:
+ *   neon_biquad_cascade_f32 chains multiple biquad stages in series,
+ *   each maintaining a 2-element state vector {s1, s2}.
+ *
+ * Biquad Filter Design (Robert Bristow-Johnson Audio EQ Cookbook):
+ *   neon_biquad_lowpass - Low-pass filter coefficients.
+ *   neon_biquad_highpass - High-pass filter coefficients.
+ *   neon_biquad_bandpass - Band-pass filter coefficients.
+ *   neon_biquad_notch - Notch (band-reject) filter coefficients.
+ *   Each returns {b0, b1, b2, a1, a2} as normalized coefficients.
+ *
+ * Eigen Wrapper:
+ *   neon_biquad for VectorXf with state management.
+ */
 #include "optmath/neon_kernels.hpp"
 #include <cmath>
 

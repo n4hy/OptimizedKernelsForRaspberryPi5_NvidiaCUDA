@@ -3,12 +3,94 @@
  * Copyright (c) 2026 Dr Robert W McGwier, PhD
  * SPDX-License-Identifier: MIT
  *
- * GPU-accelerated radar signal processing kernels:
- * - Cross-Ambiguity Function (CAF)
- * - CFAR Detection
- * - Doppler Processing
- * - Beamforming
- * - NLMS Adaptive Filtering
+ * GPU-accelerated radar signal processing kernels for passive and active
+ * radar systems. Includes window functions, cross-ambiguity, CFAR detection,
+ * Doppler processing, beamforming, adaptive filtering, and clutter
+ * cancellation.
+ *
+ * ---------------------------------------------------------------------------
+ * 1. Window Function Kernels
+ * ---------------------------------------------------------------------------
+ *    Spectral window generators and applicators:
+ *      - Hamming:        w[n] = 0.54 - 0.46 * cosf(2*pi*n / (N-1))
+ *      - Hanning:        w[n] = 0.5 * (1 - cosf(2*pi*n / (N-1)))
+ *      - Blackman:       3-term cosine sum
+ *      - Blackman-Harris: 4-term cosine sum
+ *    safe_window_divisor() prevents division by zero when n = 1.
+ *    kernel_apply_window_complex_f32 multiplies both real and imaginary
+ *    components by the window coefficient.
+ *    cuda_generate_window dispatches by WindowType enum, generating the
+ *    window on the GPU with CPU fallback.
+ *
+ * ---------------------------------------------------------------------------
+ * 2. Cross-Ambiguity Function (CAF) Pipeline
+ * ---------------------------------------------------------------------------
+ *    Full GPU-resident pipeline computing the CAF surface over a grid of
+ *    Doppler frequencies and range bins:
+ *      (a) kernel_doppler_shift_f32: applies Doppler shift to the reference
+ *          signal as ref * exp(-j * 2*pi * fd * t / fs) using __sincosf.
+ *      (b) kernel_interleave_complex_f32: converts split real/imaginary to
+ *          interleaved format with zero-padding to the FFT length.
+ *      (c) cufftExecC2C: forward FFT of both reference and surveillance.
+ *      (d) kernel_complex_conj_mul_interleaved_f32: computes
+ *          Surv * conj(Ref) * scale in the frequency domain.
+ *      (e) cufftExecC2C: inverse FFT of the product.
+ *      (f) kernel_magnitude_interleaved_f32: extracts |correlation| for
+ *          each range bin.
+ *    FFT size = next power of 2 >= n_samples + n_range_bins.
+ *    The surveillance FFT is computed once; the Doppler loop iterates
+ *    over reference shifts only.
+ *
+ * ---------------------------------------------------------------------------
+ * 3. CFAR Detection Kernels
+ * ---------------------------------------------------------------------------
+ *      - kernel_cfar_2d_f32: 2D CA-CFAR with a BLOCK_2D = 16 thread grid.
+ *            Iterates a rectangular training window excluding guard cells,
+ *            using column-major indexing. Produces a binary detection map
+ *            where threshold = mean_noise * pfa_factor.
+ *      - kernel_cfar_ca_1d_f32: 1D Cell-Averaging CFAR with leading and
+ *            lagging reference windows. Threshold = mean_noise * pfa_factor.
+ *            Outputs a binary detection mask.
+ *
+ * ---------------------------------------------------------------------------
+ * 4. Doppler Processing Kernels
+ * ---------------------------------------------------------------------------
+ *      - kernel_apply_window_2d_f32: applies a 1D window along the slow-time
+ *            (pulse) dimension of a range-Doppler data cube, windowing each
+ *            pulse for all range bins simultaneously.
+ *
+ * ---------------------------------------------------------------------------
+ * 5. Beamforming Kernels
+ * ---------------------------------------------------------------------------
+ *      - kernel_steering_vector_ula_f32: generates the ULA steering vector
+ *            a(theta) = [1, exp(-j*2*pi*d*sin(theta)), ...] using __sincosf
+ *            for each element.
+ *      - kernel_steering_vectors_batch_f32: generates steering vectors for
+ *            multiple angles in parallel (one thread block per angle).
+ *      - kernel_bartlett_spectrum_f32: computes the Bartlett beamformer
+ *            power spectrum P(theta) = |a^H * x|^2 using shared memory
+ *            reduction for the conjugate dot product a^H * x, followed by
+ *            magnitude squared.
+ *
+ * ---------------------------------------------------------------------------
+ * 6. NLMS Adaptive Filter
+ * ---------------------------------------------------------------------------
+ *    CPU implementation of the Normalized LMS adaptive filter. Sequential
+ *    weight updates prevent efficient GPU parallelization. Per sample:
+ *      y = w^H * ref        (filter output)
+ *      e = surv - y          (error signal)
+ *      w += (mu / power) * e * conj(ref)  (weight update)
+ *    Note: GPU alternatives for adaptive filtering include Block LMS,
+ *    Frequency-Domain LMS (FDLMS), or Recursive Least Squares (RLS).
+ *
+ * ---------------------------------------------------------------------------
+ * 7. Projection Clutter Cancellation
+ * ---------------------------------------------------------------------------
+ *    cuda_projection_clutter computes the orthogonal projection matrix
+ *    P_perp = I - C * (C^H * C)^{-1} * C^H and applies it to suppress
+ *    clutter. Uses Eigen for the matrix algebra on the CPU since GPU
+ *    overhead is not justified for the typically small clutter subspace
+ *    dimensions.
  */
 
 // Suppress NVCC warning about Eigen host functions being called from host/device context

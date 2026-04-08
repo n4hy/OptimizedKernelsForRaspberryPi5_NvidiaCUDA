@@ -1,3 +1,49 @@
+/**
+ * OptMathKernels NEON Linear Algebra
+ * Copyright (c) 2026 Dr Robert W McGwier, PhD
+ * SPDX-License-Identifier: MIT
+ *
+ * NEON-accelerated dense linear algebra routines including decompositions,
+ * triangular solvers, and matrix inversion.
+ *
+ * Internal BLAS-1 Helpers:
+ *   neon_axpy_f32 (y += alpha*x), neon_scale_f32 (x *= alpha),
+ *   neon_iamax_f32 (argmax|x|), neon_row_swap_f32. All NEON-accelerated
+ *   with vld1q_f32/vmlaq_f32.
+ *
+ * Triangular Solve (TRSV/TRSM):
+ *   neon_trsv_lower_f32 (forward substitution L*x = b),
+ *   neon_trsv_upper_f32 (backward substitution U*x = b),
+ *   neon_trsv_lower_unit_f32 (unit diagonal variant),
+ *   neon_trsv_lower_trans_f32 (L^T*x = b). TRSM variants for multiple
+ *   right-hand sides.
+ *
+ * Cholesky Decomposition:
+ *   neon_cholesky_f32 computes A = L*L^T in-place, column-wise. Validates
+ *   symmetric positive-definite property. Zeros strict upper triangle.
+ *
+ * LU Decomposition with Partial Pivoting:
+ *   neon_lu_f32 in-place with row pivoting via neon_iamax_f32 for pivot
+ *   selection. Rank-1 trailing submatrix updates.
+ *
+ * QR Decomposition (Householder Reflections):
+ *   neon_qr_f32 computes in-place Householder reflectors.
+ *   neon_qr_extract_q_f32 builds explicit Q by reverse-order reflector
+ *   application from identity.
+ *
+ * Linear Solvers:
+ *   neon_solve_f32 - General A*x = b via LU + permutation + triangular
+ *     solve.
+ *   neon_solve_spd_f32 - SPD A*x = b via Cholesky + forward/backward
+ *     substitution.
+ *
+ * Matrix Inversion:
+ *   neon_inverse_f32 via LU decomposition with column-wise backsolve.
+ *
+ * Eigen Wrappers:
+ *   neon_cholesky, neon_lu (returns tuple), neon_qr (returns Q,R tuple),
+ *   neon_trsv_lower/upper, neon_solve, neon_solve_spd, neon_inverse.
+ */
 #include "optmath/neon_kernels.hpp"
 #include <cmath>
 #include <cstring>
