@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.18)
 
 project(OptMathKernels
-    VERSION 0.5.10
+    VERSION 0.5.12
     LANGUAGES CXX
 )
 
@@ -110,8 +110,9 @@ if(ENABLE_CUDA)
                 # Build for multiple architectures based on CUDA toolkit version
                 if(CUDAToolkit_VERSION VERSION_GREATER_EQUAL "13.0")
                     # CUDA 13+ dropped support for SM < 75 (Maxwell, Pascal, Volta removed)
-                    # Supported: Turing (75), Ampere (80,86,87,89), Hopper (90), Blackwell (100+)
-                    set(CMAKE_CUDA_ARCHITECTURES "75;80;86;89;90;100" CACHE STRING "CUDA architectures" FORCE)
+                    # Supported: Turing (75), Ampere (80,86,87,89), Hopper (90,90a), Blackwell (100,103)
+                    # SM 100: RTX 5090/5080 (GB202/GB203), SM 103: RTX 5070/5060 (GB205/GB206)
+                    set(CMAKE_CUDA_ARCHITECTURES "75;80;86;89;90;100;103" CACHE STRING "CUDA architectures" FORCE)
                     message(STATUS "  CUDA 13+ detected - Architectures: ${CMAKE_CUDA_ARCHITECTURES}")
                     message(STATUS "  Note: CUDA 13 minimum is SM 7.5 (Turing). For older GPUs, use CUDA 12.x")
                 elseif(CUDAToolkit_VERSION VERSION_GREATER_EQUAL "12.0")
@@ -136,8 +137,8 @@ if(ENABLE_CUDA)
             endif()
 
             # Architecture-specific optimizations (newest to oldest)
-            if("100" IN_LIST CMAKE_CUDA_ARCHITECTURES)
-                message(STATUS "  Blackwell (SM 100) enabled - RTX 5090/5080 optimizations")
+            if("103" IN_LIST CMAKE_CUDA_ARCHITECTURES OR "100" IN_LIST CMAKE_CUDA_ARCHITECTURES)
+                message(STATUS "  Blackwell (SM 100/103) enabled - RTX 5090/5080/5070 optimizations")
                 add_compile_definitions(OPTMATH_CUDA_BLACKWELL)
             endif()
             if("90" IN_LIST CMAKE_CUDA_ARCHITECTURES)

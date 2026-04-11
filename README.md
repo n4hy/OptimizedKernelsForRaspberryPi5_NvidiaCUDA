@@ -474,7 +474,7 @@ make -j$(nproc)
 | `ENABLE_I8MM` | ON | Enable I8MM int8 matrix multiply |
 | `ENABLE_VULKAN` | ON | Enable Vulkan compute |
 | `ENABLE_CUDA` | ON | Enable NVIDIA CUDA |
-| `CMAKE_CUDA_ARCHITECTURES` | 50;52;60;61;70;75;80;86;89;100 | CUDA compute capabilities (Maxwell through Blackwell) |
+| `CMAKE_CUDA_ARCHITECTURES` | 50;52;60;61;70;75;80;86;89;100;103 | CUDA compute capabilities (Maxwell through Blackwell) |
 | `BUILD_TESTS` | ON | Build GoogleTest tests |
 | `BUILD_BENCHMARKS` | OFF | Build Google Benchmark |
 | `CMAKE_POSITION_INDEPENDENT_CODE` | ON | Enable -fPIC (set globally) |
@@ -1245,6 +1245,36 @@ Every kernel source file now has a thorough header comment documenting all funct
 
 ---
 
+### v0.5.12 - CUDA 13 Full Upgrade & SM 103 Support (April 2026)
+
+**CUDA 13.0 Full Support:**
+
+- **CUDA 13.0.88 verified** - Complete build and test pass with CUDA 13 toolkit
+- **SM 103 architecture added** - Support for RTX 5070/5060 (GB205/GB206 Blackwell variants)
+- **Updated architecture list** - CUDA 13+ now builds: SM 75, 80, 86, 89, 90, 100, 103
+- **Improved Blackwell detection** - CMake now detects both SM 100 and SM 103 for `OPTMATH_CUDA_BLACKWELL`
+
+**Test Results (x86-64 with RTX 5090, CUDA 13.0.88):**
+
+| Backend | Tests | Status | Notes |
+|---------|-------|--------|-------|
+| CUDA | 36/36 | Pass | Full GPU acceleration with TF32 Tensor Cores |
+| Vulkan | 4/4 | Pass | Full GPU acceleration |
+| NEON/CPU | 11/11 | Pass | Eigen auto-vectorized for AVX2 |
+
+**Architecture Support (CUDA 13+):**
+
+| SM | Architecture | GPUs |
+|----|--------------|------|
+| 75 | Turing | RTX 2060/2070/2080 |
+| 80/86 | Ampere | RTX 3060/3070/3080/3090, A100 |
+| 89 | Ada Lovelace | RTX 4060/4070/4080/4090 |
+| 90 | Hopper | H100 |
+| 100 | Blackwell | RTX 5080/5090 (GB202/GB203) |
+| 103 | Blackwell | RTX 5060/5070 (GB205/GB206) |
+
+---
+
 ### v0.5.10 - TF32 Tolerance Fix & Verified CUDA 13 + cuSolver Cholesky (April 2026)
 
 **CUDA 13 Verified:**
@@ -1275,7 +1305,7 @@ Every kernel source file now has a thorough header comment documenting all funct
 
 - **Full CUDA 13.0 compatibility** - API changes for `cudaMemPrefetchAsync` and `cudaDeviceProp`
 - **Architecture auto-detection** - CMake automatically selects appropriate architectures based on CUDA toolkit version:
-  - CUDA 13+: SM 75, 80, 86, 89, 90, 100 (Turing through Blackwell)
+  - CUDA 13+: SM 75, 80, 86, 89, 90, 100, 103 (Turing through Blackwell)
   - CUDA 12.x: SM 50-89 (Maxwell through Ada)
   - CUDA 11.x: SM 50-86 (Maxwell through Ampere)
 - **Native build option** - Use `-DOPTMATH_CUDA_NATIVE=ON` for faster compilation targeting only the local GPU
