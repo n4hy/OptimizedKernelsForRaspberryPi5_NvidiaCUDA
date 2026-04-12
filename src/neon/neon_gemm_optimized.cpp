@@ -9,9 +9,9 @@
  *
  * Cache Blocking Infrastructure:
  *   Runtime MC/KC/NC parameters tuned per target: Cortex-A76 (Pi 5: 64KB
- *   L1, 512KB L2, 2MB L3) uses MC=384, KC=512, NC=4096. Cortex-A720
- *   (CIX P1: 12MB L3) uses MC=512, KC=768, NC=8192. Thread-local aligned
- *   buffers for packed panels.
+ *   L1, 512KB L2, 2MB L3) uses MC=128, KC=256, NC=512. Cortex-A720
+ *   (CIX P1: 512KB L2, 12MB L3) uses MC=256, KC=512, NC=2048. Thread-
+ *   local aligned buffers for packed panels.
  *
  * 8x8 Microkernel:
  *   micro_kernel_8x8 uses column-oriented accumulators for efficient
@@ -64,9 +64,11 @@ static size_t get_kc() { return platform::get_gemm_kc(); }
 static size_t get_nc() { return platform::get_gemm_nc(); }
 
 // Maximum possible values (for static buffer sizing)
+// NC=2048 enables better L3 utilization on CIX P1 (12MB L3):
+//   B panel = KC*NC*4 = 512*2048*4 = 4MB, 33% of 12MB L3
 constexpr size_t MC_MAX = 256;
 constexpr size_t KC_MAX = 512;
-constexpr size_t NC_MAX = 1024;
+constexpr size_t NC_MAX = 2048;
 
 // Microkernel dimensions
 constexpr size_t MR = 8;    // Rows per microkernel

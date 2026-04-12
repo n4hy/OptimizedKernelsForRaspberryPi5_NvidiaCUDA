@@ -130,15 +130,18 @@ TEST(PlatformTest, SVEVectorLength) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: L3 cache size is at least 8 MB
+// Test 6: L2/L3 cache sizes
 // ---------------------------------------------------------------------------
 TEST(PlatformTest, L3CacheSize) {
     std::size_t l3 = get_l3_cache_size();
+    std::size_t l2 = get_l2_cache_size();
     if (is_target_arm_platform() && detect_cpu_info().total_cores == 12) {
         EXPECT_GE(l3, static_cast<std::size_t>(8388608))
             << "L3 cache should be >= 8 MB on CIX P1; got " << l3 << " bytes";
+        EXPECT_GE(l2, static_cast<std::size_t>(256 * 1024))
+            << "L2 cache should be >= 256 KB on CIX P1; got " << l2 << " bytes";
     }
-    // On other platforms, L3 size may vary - no hard assertion
+    // On other platforms, cache sizes may vary - no hard assertion
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +151,7 @@ TEST(PlatformTest, GEMMBlockingParams) {
     if (is_target_arm_platform() && get_l3_cache_size() >= 8 * 1024 * 1024) {
         EXPECT_EQ(get_gemm_mc(), static_cast<std::size_t>(256));
         EXPECT_EQ(get_gemm_kc(), static_cast<std::size_t>(512));
-        EXPECT_EQ(get_gemm_nc(), static_cast<std::size_t>(1024));
+        EXPECT_EQ(get_gemm_nc(), static_cast<std::size_t>(2048));
     } else {
         // Smaller L3: expect smaller blocking params
         EXPECT_GT(get_gemm_mc(), static_cast<std::size_t>(0));

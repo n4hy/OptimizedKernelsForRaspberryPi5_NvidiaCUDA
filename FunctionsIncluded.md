@@ -988,6 +988,31 @@ a(θ)[n] = exp(j * 2π * d/λ * n * sin(θ))
 
 ---
 
+## Platform Detection (`optmath::platform`)
+
+### CPU Information
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `detect_cpu_info` | `const CpuInfo& detect_cpu_info()` | Detect CPU topology, cache sizes, features (cached) |
+| `get_performance_cores` | `std::vector<int> get_performance_cores()` | Get CPU IDs of big cores (A720) |
+| `get_efficiency_cores` | `std::vector<int> get_efficiency_cores()` | Get CPU IDs of LITTLE cores (A520) |
+| `pin_thread_to_performance_cores` | `int pin_thread_to_performance_cores()` | Pin calling thread to big cores |
+| `pin_thread_to_core` | `int pin_thread_to_core(int cpu_id)` | Pin calling thread to specific core |
+| `get_sve_vector_length` | `int get_sve_vector_length()` | SVE vector length in bytes (0 if unavailable) |
+| `get_l2_cache_size` | `std::size_t get_l2_cache_size()` | Per-core L2 cache size (performance core) |
+| `get_l3_cache_size` | `std::size_t get_l3_cache_size()` | Shared L3 cache size |
+
+### GEMM Cache Blocking
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `get_gemm_mc` | `std::size_t get_gemm_mc()` | MC parameter (256 for L3>=8MB, 128 otherwise) |
+| `get_gemm_kc` | `std::size_t get_gemm_kc()` | KC parameter (512 for L3>=8MB, 256 otherwise) |
+| `get_gemm_nc` | `std::size_t get_gemm_nc()` | NC parameter (2048 for L3>=8MB, 512 otherwise) |
+
+---
+
 ## License
 
 MIT License - Copyright (c) 2026 Dr Robert W McGwier, PhD

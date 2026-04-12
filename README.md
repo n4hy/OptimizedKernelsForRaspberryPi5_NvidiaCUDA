@@ -99,7 +99,7 @@ project, providing hardware-accelerated kernels for:
 - **Predicated Vector Operations**: All loops use `svwhilelt`/`svptest` predication - zero tail-handling code
 - **FCMA Complex Multiply**: 2-instruction complex multiply via `svcmla` (vs 4 NEON instructions)
 - **I8MM GEMM**: Int8 matrix multiply using `svmmla_s32` with float32 quantize/dequantize
-- **SVE2 Cache-Blocked GEMM**: Vectorized 8x8 microkernel with `svmla_n_f32_z` FMA, tuned for Cortex-A720 12MB L3 (MC=256, KC=512, NC=1024)
+- **SVE2 Cache-Blocked GEMM**: Vectorized 8x8 microkernel with `svmla_n_f32_z` FMA, tuned for Cortex-A720 12MB L3 (MC=256, KC=512, NC=2048)
 - **SVE2 Transcendentals**: Single-pass inlined polynomial approximations (no heap allocations), cos/sigmoid/tanh fused with range reduction
 - **SVE2 Radar DSP**: FCMA-accelerated CAF with vectorized Doppler shift (batch `sve2_fast_cos/sin`), cross-correlation, and beamforming
 - **SVE2 Complex Operations**: Split and interleaved formats, dot product, magnitude, phase; vectorized `complex_exp` via fast sin/cos
@@ -109,7 +109,8 @@ project, providing hardware-accelerated kernels for:
 - **CPU Topology Detection**: Identifies big.LITTLE core clusters via `/proc/cpuinfo` and sysfs
 - **Thread Affinity**: Pin threads to performance (A720) or efficiency (A520) cores
 - **SVE Vector Length**: Runtime detection via `prctl(PR_SVE_GET_VL)`
-- **Cache-Aware GEMM Tuning**: Auto-selects blocking parameters based on detected L3 cache size
+- **L2/L3 Cache Detection**: Per-core L2 and shared L3 cache sizes from sysfs with part-ID fallbacks
+- **Cache-Aware GEMM Tuning**: Auto-selects blocking parameters based on detected L2/L3 cache sizes
 
 ### DSP Kernels (`optmath::neon`)
 
@@ -167,7 +168,7 @@ project, providing hardware-accelerated kernels for:
 - Predicated loops eliminate all scalar tail handling (vs 28+ NEON tail loops)
 - FCMA complex multiply: 2 instructions vs 4 NEON instructions per complex multiply
 - I8MM: Hardware int8 matrix multiply with `svmmla_s32`
-- Cache blocking tuned for 12MB L3: MC=256, KC=512, NC=1024
+- Cache blocking tuned for 12MB L3: MC=256, KC=512, NC=2048
 
 **Mali-G720-Immortalis GPU (Vulkan)**:
 | Feature | Specification |
@@ -218,7 +219,7 @@ make -j$(nproc)
 **Cache Blocking Parameters** (auto-tuned per platform):
 ```cpp
 // Pi 5 (2MB L3):  MC=128, KC=256, NC=512
-// Orange Pi 6+ (12MB L3): MC=256, KC=512, NC=1024
+// Orange Pi 6+ (12MB L3): MC=256, KC=512, NC=2048
 // 8x8 microkernel with 4x4 register tiles (32 NEON registers)
 neon_gemm_blocked_f32(C, A, B, M, N, K, lda, ldb, ldc);
 ```
@@ -1126,7 +1127,7 @@ OptMathKernels/
 │   ├── sve2/                           # ARM SVE2 (scalable vector) kernels
 │   │   ├── sve2_kernels.cpp        # Predicated vector ops (svwhilelt_b32 loops),
 │   │   │                           #   transcendentals (predicated Horner/Chebyshev),
-│   │   │                           #   8x8 GEMM microkernel (MC=256/KC=512/NC=1024),
+│   │   │                           #   8x8 GEMM microkernel (MC=256/KC=512/NC=2048),
 │   │   │                           #   I8MM int8 GEMM (svmmla_s32), FIR filter
 │   │   ├── sve2_complex.cpp        # FCMA-accelerated complex multiply (svcmla rotations
 │   │   │                           #   0/90/270, 2 instructions vs 4), split & interleaved
@@ -1233,7 +1234,7 @@ Every kernel source file now has a thorough header comment documenting all funct
 
 **SVE2 Kernels (4 files):**
 
-- **`sve2_kernels.cpp`**: Predicated vector ops (`svwhilelt_b32` loops), transcendentals (predicated Horner/Chebyshev polynomials), 8x8 GEMM microkernel (MC=256/KC=512/NC=1024 for A720 12MB L3), I8MM int8 GEMM (`svmmla_s32`)
+- **`sve2_kernels.cpp`**: Predicated vector ops (`svwhilelt_b32` loops), transcendentals (predicated Horner/Chebyshev polynomials), 8x8 GEMM microkernel (MC=256/KC=512/NC=2048 for A720 12MB L3), I8MM int8 GEMM (`svmmla_s32`)
 - **`sve2_complex.cpp`**: FCMA-accelerated complex multiply (`svcmla_f32_z` rotations 0/90/270 for 2-instruction complex multiply), non-FCMA fallback with `svtbl_f32` deinterleaving, native `svsqrt_f32_z` magnitude
 - **`sve2_radar.cpp`**: CAF with predicated complex MAC (`svmla_f32_m` merging semantics), cross-correlation, phase-shift beamforming
 - **`sve2_detect.cpp`**: Runtime SVE2 detection via `getauxval(AT_HWCAP2) & HWCAP2_SVE2`
@@ -1242,6 +1243,37 @@ Every kernel source file now has a thorough header comment documenting all funct
 
 - File Structure section now includes per-file descriptions of all functional blocks and key APIs
 - Each source file entry documents the specific intrinsics, algorithms, and CUDA/cuBLAS/cuFFT/cuSOLVER calls used
+
+---
+
+### v0.5.13 - GEMM L3 Optimization, L2 Detection & SVE2 Prefetch (April 2026)
+
+**Bug Fixes:**
+
+- **SVE2 GEMM buffer bounds clamping** - Added `std::min()` clamping of runtime MC/KC/NC parameters to static buffer maximums, preventing potential buffer overflow if platform detection returned values exceeding `MAX_MC`/`MAX_KC`/`MAX_NC`. NEON GEMM already had this safety check; SVE2 GEMM was missing it.
+- **NEON GEMM docstring correction** - Fixed inaccurate cache blocking parameter values in the file header comment (claimed MC=384-512 but code used MC=128-256).
+
+**Optimizations (CIX P1 / Orange Pi 6 Plus):**
+
+- **GEMM NC doubled to 2048 for large L3** - B panel now occupies 4MB (33% of 12MB L3) vs prior 2MB (17%). Reduces main memory traffic by ~2x for large matrix multiplications on the CIX P1 CD8160.
+- **SVE2 GEMM microkernel prefetch** - Added `svprfb(SV_PLDL1KEEP)` prefetch hints to pipeline next iteration's A/B panels into L1 data cache, reducing stall cycles on Cortex-A720.
+
+**Platform Detection Enhancements:**
+
+- **L2 cache size detection** - New `get_l2_cache_size()` API reads per-core L2 from sysfs (probes a performance core), with heuristic fallbacks: A720=512KB, A520=256KB, A76=512KB.
+- **`CpuInfo::l2_cache_bytes` field** - Cached L2 size available via `detect_cpu_info()`.
+- **Updated test suite** - Platform test validates L2 detection and new NC=2048 GEMM blocking.
+
+**Test Results (CIX P1 CD8160, aarch64, all 16/16 pass):**
+
+| Backend | Tests | Status |
+|---------|-------|--------|
+| NEON | 7/7 | Pass |
+| SVE2 | 1/1 | Pass |
+| Vulkan | 4/4 | Pass |
+| Radar | 2/2 | Pass |
+| Platform | 1/1 | Pass |
+| Basic | 1/1 | Pass |
 
 ---
 
@@ -1695,7 +1727,7 @@ Full hardware-specific optimization for the CIX P1 SoC's ARMv9 big.LITTLE cores 
 - Predicated vector operations: `svwhilelt`/`svptest` loops eliminate all scalar tail handling
 - FCMA complex multiply: `svcmla_f32_z` for 2-instruction complex multiply (vs 4 NEON)
 - I8MM GEMM: `svmmla_s32` hardware int8 matrix multiply with float32 quantization
-- SVE2 cache-blocked GEMM tuned for A720 12MB L3 (MC=256, KC=512, NC=1024)
+- SVE2 cache-blocked GEMM tuned for A720 12MB L3 (MC=256, KC=512, NC=2048)
 - Complete SVE2 transcendentals: exp, sin, cos, sigmoid, tanh
 - SVE2 radar DSP: CAF with FCMA inner loop, cross-correlation, beamforming
 
@@ -1707,7 +1739,7 @@ Full hardware-specific optimization for the CIX P1 SoC's ARMv9 big.LITTLE cores 
 
 **NEON GEMM Runtime Tuning** (`neon_gemm_optimized.cpp`):
 - Cache blocking parameters now auto-selected at runtime based on detected hardware
-- 12MB L3 (A720): MC=256, KC=512, NC=1024; 2MB L3 (A76): MC=128, KC=256, NC=512
+- 12MB L3 (A720): MC=256, KC=512, NC=2048; 2MB L3 (A76): MC=128, KC=256, NC=512
 
 **Mali-G720 Vulkan Shaders** (`vulkan_backend.cpp`):
 - Auto-detects Mali-G720 via vendor ID and device name

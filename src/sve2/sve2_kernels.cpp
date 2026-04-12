@@ -26,10 +26,11 @@
  *
  * Cache-Blocked GEMM with 8x8 Microkernel:
  *   micro_kernel_8x8_sve2 uses column-oriented accumulators (8 columns x 2
- *   vector halves for VL-agnostic design). pack_A_panel_sve2 packs MR=8 row
- *   strips with predicated loads. pack_B_panel_sve2 packs NR=8 column strips.
- *   sve2_gemm_blocked_f32 implements 3-level Goto-style blocking: MC=256,
- *   KC=512, NC=1024 tuned for Cortex-A720 12MB L3 cache on Orange Pi 5 Plus.
+ *   vector halves for VL-agnostic design) with L1 prefetch hints (svprfb).
+ *   pack_A_panel_sve2 packs MR=8 row strips with predicated loads.
+ *   pack_B_panel_sve2 packs NR=8 column strips. sve2_gemm_blocked_f32
+ *   implements 3-level Goto-style blocking: MC=256, KC=512, NC=2048 tuned
+ *   for Cortex-A720 12MB L3 cache. B panel = 4MB (33% of L3).
  *
  * I8MM Integer Matrix Multiply:
  *   sve2_gemm_i8mm uses svmmla_s32 for 2x2 output tiles processing K in
@@ -548,9 +549,11 @@ static constexpr size_t MR = 8;
 static constexpr size_t NR = 8;
 
 // Maximum blocking parameters (thread-local buffers sized for max)
+// NC=2048 enables better L3 utilization on CIX P1 (12MB L3):
+//   B panel = KC*NC*4 = 512*2048*4 = 4MB, 33% of 12MB L3
 static constexpr size_t MAX_MC = 256;
 static constexpr size_t MAX_KC = 512;
-static constexpr size_t MAX_NC = 1024;
+static constexpr size_t MAX_NC = 2048;
 
 // Aligned thread-local packed buffers
 alignas(64) static thread_local float packed_A[MAX_MC * MAX_KC];
@@ -642,6 +645,12 @@ static void micro_kernel_8x8_sve2(
     svbool_t pt = svptrue_b32();
 
     for (size_t p = 0; p < k; ++p) {
+        // Prefetch next iteration's A and B panels into L1 data cache
+        if (p + 1 < k) {
+            svprfb(pt, A_packed + (p + 1) * MR, SV_PLDL1KEEP);
+            svprfb(pt, B_packed + (p + 1) * NR, SV_PLDL1KEEP);
+        }
+
         // Load A column panel (8 floats = rows 0-7 at k-index p)
         svfloat32_t a_lo = svld1_f32(pt, A_packed + p * MR);      // rows 0-3
         svfloat32_t a_hi = svld1_f32(pt, A_packed + p * MR + 4);  // rows 4-7
@@ -696,10 +705,10 @@ void sve2_gemm_blocked_f32(
     std::size_t lda, std::size_t ldb, std::size_t ldc) {
 
 #ifdef OPTMATH_USE_SVE2
-    // Get runtime cache blocking parameters
-    const size_t MC = platform::get_gemm_mc();
-    const size_t KC = platform::get_gemm_kc();
-    const size_t NC = platform::get_gemm_nc();
+    // Get runtime cache blocking parameters, clamped to static buffer sizes
+    const size_t MC = std::min(platform::get_gemm_mc(), MAX_MC);
+    const size_t KC = std::min(platform::get_gemm_kc(), MAX_KC);
+    const size_t NC = std::min(platform::get_gemm_nc(), MAX_NC);
 
     // Initialize C to zero
     for (size_t j = 0; j < N; ++j) {

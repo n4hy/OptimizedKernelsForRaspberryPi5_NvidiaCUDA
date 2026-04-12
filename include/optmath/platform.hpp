@@ -25,6 +25,7 @@ struct CpuInfo {
     std::vector<CoreInfo> cores;
     std::vector<int> performance_cores;  // CPU IDs sorted by capacity descending
     std::vector<int> efficiency_cores;   // CPU IDs for low-capacity cores
+    std::size_t l2_cache_bytes;          // Per-core L2 (performance core)
     std::size_t l3_cache_bytes;
     int sve_vector_length_bytes;         // SVE VL in bytes (0 if no SVE)
     bool has_sve2;
@@ -71,6 +72,12 @@ int pin_thread_to_core(int cpu_id);
 int get_sve_vector_length();
 
 /**
+ * @brief Get per-core L2 cache size in bytes (performance core).
+ * @return L2 size in bytes, or 0 if not detectable.
+ */
+std::size_t get_l2_cache_size();
+
+/**
  * @brief Get L3 cache size in bytes from sysfs.
  * @return L3 size in bytes, or 0 if not detectable.
  */
@@ -90,7 +97,7 @@ std::size_t get_gemm_kc();
 
 /**
  * @brief Get optimal GEMM cache blocking NC parameter.
- * Returns 1024 for L3 >= 8MB, 512 otherwise.
+ * Returns 2048 for L3 >= 8MB, 512 otherwise.
  */
 std::size_t get_gemm_nc();
 

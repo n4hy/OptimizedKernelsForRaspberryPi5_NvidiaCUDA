@@ -207,32 +207,42 @@ static CpuInfo build_cpu_info() {
                   return info.cores[a].capacity > info.cores[b].capacity;
               });
 
-    // Detect L3 cache size
+    // Detect L2 and L3 cache sizes from the first performance core
+    // (or cpu0 as fallback)
+    info.l2_cache_bytes = 0;
     info.l3_cache_bytes = 0;
-    for (int idx = 0; idx < 10; ++idx) {
-        std::string cache_base = "/sys/devices/system/cpu/cpu0/cache/index" + std::to_string(idx);
-        std::string level_str = read_sysfs_string(cache_base + "/level");
-        if (level_str.empty()) break;
-        int level = 0;
-        try { level = std::stoi(level_str); } catch (...) {}
-        if (level == 3) {
-            std::string size_str = read_sysfs_string(cache_base + "/size");
-            info.l3_cache_bytes = parse_cache_size(size_str);
-            break;
+    {
+        // Prefer a performance core for cache probing (A720 has larger L2 than A520)
+        int probe_cpu = info.performance_cores.empty() ? 0 : info.performance_cores[0];
+        std::string cpu_base = "/sys/devices/system/cpu/cpu" + std::to_string(probe_cpu) + "/cache";
+        for (int idx = 0; idx < 10; ++idx) {
+            std::string cache_base = cpu_base + "/index" + std::to_string(idx);
+            std::string level_str = read_sysfs_string(cache_base + "/level");
+            if (level_str.empty()) break;
+            int level = 0;
+            try { level = std::stoi(level_str); } catch (...) {}
+            if (level == 2 && info.l2_cache_bytes == 0) {
+                std::string size_str = read_sysfs_string(cache_base + "/size");
+                info.l2_cache_bytes = parse_cache_size(size_str);
+            } else if (level == 3 && info.l3_cache_bytes == 0) {
+                std::string size_str = read_sysfs_string(cache_base + "/size");
+                info.l3_cache_bytes = parse_cache_size(size_str);
+            }
         }
     }
 
-    // If sysfs doesn't report L3, try heuristic based on CPU part
-    if (info.l3_cache_bytes == 0) {
-        // Known L3 sizes by CPU part
+    // Heuristic fallbacks for L2/L3 when sysfs doesn't report
+    if (info.l2_cache_bytes == 0) {
         for (auto& c : info.cores) {
-            if (c.part_id == 0xd81) { // A720 - CIX P1 has 12MB shared L3
-                info.l3_cache_bytes = 12 * 1024 * 1024;
-                break;
-            } else if (c.part_id == 0xd0b) { // A76 - Pi5 has 2MB L3
-                info.l3_cache_bytes = 2 * 1024 * 1024;
-                break;
-            }
+            if (c.part_id == 0xd81) { info.l2_cache_bytes = 512 * 1024; break; }  // A720: 512KB
+            if (c.part_id == 0xd0b) { info.l2_cache_bytes = 512 * 1024; break; }  // A76:  512KB
+            if (c.part_id == 0xd80) { info.l2_cache_bytes = 256 * 1024; break; }  // A520: 256KB
+        }
+    }
+    if (info.l3_cache_bytes == 0) {
+        for (auto& c : info.cores) {
+            if (c.part_id == 0xd81) { info.l3_cache_bytes = 12 * 1024 * 1024; break; }  // CIX P1
+            if (c.part_id == 0xd0b) { info.l3_cache_bytes = 2 * 1024 * 1024; break; }   // Pi5
         }
     }
 
@@ -250,6 +260,7 @@ static CpuInfo build_cpu_info() {
 #else // !__linux__
     info.total_cores = 1;
     info.l3_cache_bytes = 0;
+    info.l2_cache_bytes = 0;
     info.sve_vector_length_bytes = 0;
     info.has_sve2 = false;
     info.has_fcma = false;
@@ -314,6 +325,10 @@ int get_sve_vector_length() {
     return 0;
 }
 
+std::size_t get_l2_cache_size() {
+    return detect_cpu_info().l2_cache_bytes;
+}
+
 std::size_t get_l3_cache_size() {
     return detect_cpu_info().l3_cache_bytes;
 }
@@ -330,7 +345,10 @@ std::size_t get_gemm_kc() {
 
 std::size_t get_gemm_nc() {
     std::size_t l3 = get_l3_cache_size();
-    return (l3 >= 8 * 1024 * 1024) ? 1024 : 512;
+    // For large L3 (>=8MB, e.g. CIX P1 12MB), use NC=2048 to better
+    // utilize L3: B panel = KC*NC*4 = 512*2048*4 = 4MB (33% of 12MB).
+    // For smaller L3 (<8MB, e.g. Pi5 2MB), NC=512.
+    return (l3 >= 8 * 1024 * 1024) ? 2048 : 512;
 }
 
 } // namespace platform
