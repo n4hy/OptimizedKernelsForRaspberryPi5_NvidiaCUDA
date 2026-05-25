@@ -1,10 +1,10 @@
 # OptMathKernels
 
-[![Latest Release](https://img.shields.io/badge/release-v0.5.15-blue)](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.15)
+[![Latest Release](https://img.shields.io/badge/release-v0.5.16-blue)](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.16)
 
 **High-Performance Numerical Library for ARM SBCs and NVIDIA GPUs**
 
-> **Latest release:** [v0.5.15 — Complete source documentation coverage](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.15)
+> **Latest release:** [v0.5.16 — x86_64 desktop RTX 5090 benchmarks](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.16)
 
 OptMathKernels is a C++20 numerical library optimized for **Raspberry Pi 5**, **Orange Pi 6 Plus**, and **NVIDIA CUDA GPUs**. It seamlessly bridges **Eigen** (CPU), **ARM NEON** (SIMD), **ARM SVE2** (Scalable Vectors), **Vulkan** (Compute Shaders), and **CUDA** (NVIDIA GPUs) into a single, easy-to-use API.
 
@@ -1365,6 +1365,16 @@ OptMathKernels/
 ---
 
 ## Recent Changes
+
+### v0.5.16 - x86_64 Desktop RTX 5090 Benchmarks (May 2026)
+
+**Documentation:**
+
+- **New benchmark section: Intel Core Ultra 9 285K + RTX 5090** - Added measured results for a desktop Blackwell build (CUDA 13.0.88, driver 580.126.20, Vulkan 1.3.275): Vulkan matrix-multiply scaling (1.28 → 114 GFLOPS, 64²→1024²), the full Vulkan compute-kernel set (vec ops, reductions, conv1D/2D, prefix sum, transpose), Eigen/scalar CPU reference figures, radar scalar-path throughput (CAF, CFAR, NLMS, MTI, beamform), and the 16/16 test-suite pass with the 36-test CUDA suite on SM 10.0. Complements the existing 275HX/5070 Ti laptop section.
+
+No code behavior changes; documentation only. All 16/16 test suites pass on x86_64 with the RTX 5090.
+
+---
 
 ### v0.5.15 - Complete Source Documentation Coverage (May 2026)
 
