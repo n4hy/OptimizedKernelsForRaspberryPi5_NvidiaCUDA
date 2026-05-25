@@ -1,10 +1,10 @@
 # OptMathKernels
 
-[![Latest Release](https://img.shields.io/badge/release-v0.5.14-blue)](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.14)
+[![Latest Release](https://img.shields.io/badge/release-v0.5.15-blue)](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.15)
 
 **High-Performance Numerical Library for ARM SBCs and NVIDIA GPUs**
 
-> **Latest release:** [v0.5.14 — Discrete GPU preference & x86_64 dual-GPU benchmarks](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.14)
+> **Latest release:** [v0.5.15 — Complete source documentation coverage](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.15)
 
 OptMathKernels is a C++20 numerical library optimized for **Raspberry Pi 5**, **Orange Pi 6 Plus**, and **NVIDIA CUDA GPUs**. It seamlessly bridges **Eigen** (CPU), **ARM NEON** (SIMD), **ARM SVE2** (Scalable Vectors), **Vulkan** (Compute Shaders), and **CUDA** (NVIDIA GPUs) into a single, easy-to-use API.
 
@@ -1304,6 +1304,18 @@ OptMathKernels/
 ---
 
 ## Recent Changes
+
+### v0.5.15 - Complete Source Documentation Coverage (May 2026)
+
+**Documentation:**
+
+- **Comprehensive header doc blocks for the last two source files** - Added the same per-functional-block header documentation standard introduced in v0.5.11 to `src/vulkan/vulkan_backend.cpp` (12 functional blocks: shader loading, buffers, context lifecycle, pipeline cache, dispatch, vector/matrix/DSP/reduction/scan/FFT ops, Mali-G720 specialization, CPU fallback) and `src/platform/platform.cpp` (7 functional blocks: sysfs helpers, CPU/feature/cache detection, cached accessor, core topology, thread affinity, feature/cache accessors, GEMM blocking selection). **Every source file in `src/` now carries a comprehensive `/**` header doc block.**
+- **Maximal inline documentation of Vulkan device selection** - Expanded the discrete-GPU preference logic comments to cover enumeration ordering, type scoring, compute-queue eligibility, and the `VK_DRIVER_FILES` override recipe for selecting a specific GPU.
+- **README release link** - Added a release badge and "Latest release" callout linking to the current GitHub release.
+
+No code behavior changes; documentation only. All 16/16 test suites continue to pass.
+
+---
 
 ### v0.5.14 - Discrete GPU Preference & x86_64 Dual-GPU Benchmarks (May 2026)
 
