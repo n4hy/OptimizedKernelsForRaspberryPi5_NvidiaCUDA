@@ -1301,6 +1301,29 @@ OptMathKernels/
 
 ## Recent Changes
 
+### v0.5.14 - Discrete GPU Preference & x86_64 Dual-GPU Benchmarks (May 2026)
+
+**Vulkan Backend:**
+
+- **Discrete-GPU-preferred device selection** - The backend previously picked `devices[0]` (first enumerated device), which on multi-GPU machines (e.g. a laptop with an integrated GPU alongside a discrete card) could default to the slower integrated GPU. It now ranks physical devices by type (discrete > integrated > virtual > CPU) and only considers devices exposing a compute queue, so the queue-family search cannot fail on the chosen device. The selected GPU is logged as `[Vulkan] Selected GPU: ...`.
+
+**Documentation:**
+
+- **x86_64 workstation benchmark section** - Added results for Intel Core Ultra 9 275HX + RTX 5070 Ti, showing Intel iGPU vs NVIDIA RTX 5070 Ti Vulkan numbers side-by-side, CPU/Eigen and radar reference figures, and the 16/16 test-suite (138 tests) breakdown including the CUDA suite. ARM / Orange Pi 6 Plus / Raspberry Pi 5 content is unchanged.
+
+**Test Results (x86_64, Core Ultra 9 275HX + RTX 5070 Ti, all 16/16 pass):**
+
+| Backend | Tests | Status |
+|---------|-------|--------|
+| NEON (scalar fallback) | 68 | Pass |
+| Vulkan | 5 | Pass |
+| Radar | 19 | Pass |
+| CUDA (RTX 5070 Ti) | 36 | Pass |
+| Platform | 9 | Pass |
+| Basic | 1 | Pass |
+
+---
+
 ### v0.5.11 - Comprehensive Kernel Documentation (April 2026)
 
 **Source-Level Documentation:**
