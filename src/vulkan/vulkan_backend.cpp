@@ -1,3 +1,102 @@
+/**
+ * OptMathKernels Vulkan Compute Backend
+ * Copyright (c) 2026 Dr Robert W McGwier, PhD
+ * SPDX-License-Identifier: MIT
+ *
+ * Cross-vendor GPU compute backend built on the Vulkan 1.2 compute pipeline.
+ * Provides Eigen-typed host wrappers around SPIR-V compute shaders for vector,
+ * matrix, DSP, reduction, scan, and FFT operations. Runs on any Vulkan 1.1+
+ * device (NVIDIA, AMD, Intel, ARM Mali, llvmpipe), with a transparent CPU
+ * fallback compiled in when OPTMATH_USE_VULKAN is undefined.
+ *
+ * ---------------------------------------------------------------------------
+ * 1. SPIR-V Shader Loading  (readFile)
+ * ---------------------------------------------------------------------------
+ *    Locates compiled `.spv` modules by probing, in priority order: the
+ *    OPTMATH_KERNELS_PATH env var, the compile-time OPTMATH_SPV_BUILD_DIR
+ *    (for FetchContent consumers), the build tree, and the system install
+ *    prefixes (/usr/local/share, /usr/share). Pads each blob to 4-byte
+ *    alignment as required by vkCreateShaderModule.
+ *
+ * ---------------------------------------------------------------------------
+ * 2. Device Memory & Buffers  (createBuffer, findMemoryType)
+ * ---------------------------------------------------------------------------
+ *    Allocates VkBuffers and backing VkDeviceMemory, selecting a memory type
+ *    that satisfies the requested VkMemoryPropertyFlags (typically HOST_VISIBLE
+ *    | HOST_COHERENT for staging host<->device data).
+ *
+ * ---------------------------------------------------------------------------
+ * 3. Context Lifecycle  (VulkanContext::init / cleanup, atexit handler)
+ * ---------------------------------------------------------------------------
+ *    Creates the instance, selects a physical device, creates the logical
+ *    device + compute queue + command pool, and tears them down in reverse.
+ *    Physical-device selection ranks candidates by type and PREFERS A DISCRETE
+ *    GPU (discrete > integrated > virtual > CPU), considering only devices that
+ *    expose a VK_QUEUE_COMPUTE_BIT queue family. This avoids defaulting to a
+ *    slower integrated GPU on multi-GPU machines (see the detailed comment at
+ *    the selection site). An atexit handler runs cleanup before Vulkan layer
+ *    static destructors to avoid shutdown crashes.
+ *
+ * ---------------------------------------------------------------------------
+ * 4. Pipeline Cache  (getOrCreatePipeline, cleanupPipelineCache)
+ * ---------------------------------------------------------------------------
+ *    Builds and memoizes per-shader compute pipelines (descriptor set layout,
+ *    pipeline layout with push constants, VkPipeline) in a mutex-guarded map
+ *    keyed by shader name + buffer count + push-constant size, so repeated
+ *    dispatches of the same kernel reuse GPU objects.
+ *
+ * ---------------------------------------------------------------------------
+ * 5. Generic Compute Dispatch  (run_compute, run_reduction)
+ * ---------------------------------------------------------------------------
+ *    Stages input buffers, binds descriptor sets, records a command buffer,
+ *    submits to the compute queue, and waits on a fence before reading back
+ *    results. run_reduction implements multi-pass tree reduction for scalar
+ *    outputs with a host-side combine of the final partials.
+ *
+ * ---------------------------------------------------------------------------
+ * 6. Vector Operations
+ * ---------------------------------------------------------------------------
+ *    vulkan_vec_add / _sub / _mul / _div (elementwise), vulkan_vec_dot and
+ *    vulkan_vec_norm (reduction-backed).
+ *
+ * ---------------------------------------------------------------------------
+ * 7. Matrix Operations
+ * ---------------------------------------------------------------------------
+ *    Elementwise add/sub/scale/hadamard, vulkan_mat_mul (32x32 shared-memory
+ *    tiled GEMM), vulkan_mat_transpose (tiled transpose), mat-vec product and
+ *    outer product. Eigen matrices are column-major; shaders index accordingly.
+ *
+ * ---------------------------------------------------------------------------
+ * 8. DSP Kernels
+ * ---------------------------------------------------------------------------
+ *    vulkan_convolution_1d/2d and vulkan_correlation_1d/2d.
+ *
+ * ---------------------------------------------------------------------------
+ * 9. Reductions & Scan
+ * ---------------------------------------------------------------------------
+ *    vulkan_reduce_sum/max/min (via run_reduction) and vulkan_scan_prefix_sum
+ *    (work-efficient Blelloch scan; falls back to CPU above the shader's
+ *    supported workgroup size of 256).
+ *
+ * ---------------------------------------------------------------------------
+ * 10. FFT  (vulkan_fft_radix2/radix4, bit_reverse_copy)
+ * ---------------------------------------------------------------------------
+ *    In-place iterative Cooley-Tukey FFT with bit-reversal permutation.
+ *
+ * ---------------------------------------------------------------------------
+ * 11. Mali-G720 Specialization
+ * ---------------------------------------------------------------------------
+ *    Detects ARM Mali (vendor ID 0x13B5) and specifically Mali-G720-Immortalis
+ *    to enable subgroup-optimized shader variants, with transparent fallback
+ *    to standard shaders on all other GPUs.
+ *
+ * ---------------------------------------------------------------------------
+ * 12. CPU Fallback Stub
+ * ---------------------------------------------------------------------------
+ *    When OPTMATH_USE_VULKAN is not defined, VulkanContext::init() returns
+ *    false and is_available() reports unavailable, so callers transparently
+ *    use the NEON/SVE2/Eigen paths instead.
+ */
 #include "optmath/vulkan_backend.hpp"
 #include <iostream>
 #include <vector>
@@ -154,21 +253,45 @@ bool VulkanContext::init() {
     std::vector<VkPhysicalDevice> devices(deviceCount);
     vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
 
-    // Pick the best physical device. On multi-GPU systems (e.g. a laptop with
-    // an integrated GPU alongside a discrete card) Vulkan may enumerate the
-    // slower integrated GPU first, so rank by type and prefer a discrete GPU:
-    // discrete > integrated > virtual > CPU. Only devices that expose a compute
-    // queue are eligible, so the queue-family search below is guaranteed to
-    // succeed for the chosen device.
+    // --- Physical-device selection: prefer a discrete GPU -----------------
+    //
+    // Vulkan does NOT guarantee any ordering of vkEnumeratePhysicalDevices, and
+    // in practice the loader often lists the integrated GPU first on laptops
+    // and workstations that also have a discrete card. The previous behaviour
+    // here ("physicalDevice = devices[0]") therefore silently bound the slower
+    // integrated GPU. For example, on an Intel Core Ultra 9 275HX + RTX 5070 Ti
+    // box the loader enumerates: [0] Intel Graphics (ARL, integrated),
+    // [1] NVIDIA RTX 5070 Ti (discrete), [2] llvmpipe (CPU) -- so devices[0]
+    // was the iGPU.
+    //
+    // We instead score every candidate by its VkPhysicalDeviceType and keep the
+    // highest-scoring one, giving the natural performance preference order:
+    //   discrete (4) > integrated (3) > virtual (2) > CPU/llvmpipe (1) > other.
+    //
+    // Only candidates that advertise a VK_QUEUE_COMPUTE_BIT queue family are
+    // eligible. This is what makes the separate compute-queue search further
+    // below guaranteed to succeed for the device we pick here (a device could
+    // otherwise expose only graphics/transfer queues, e.g. a display-only or
+    // headless adapter).
+    //
+    // To override the automatic choice -- e.g. to benchmark the integrated GPU
+    // -- restrict which ICD the loader sees, which limits enumeration to that
+    // vendor's devices:
+    //   VK_DRIVER_FILES=/usr/share/vulkan/icd.d/intel_icd.json   ./app   # iGPU
+    //   VK_DRIVER_FILES=/usr/share/vulkan/icd.d/nvidia_icd.json  ./app   # NV
+    //
+    // deviceScore: maps a Vulkan device type to a preference rank (higher wins).
     auto deviceScore = [](VkPhysicalDeviceType type) -> int {
         switch (type) {
-            case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:   return 4;
-            case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return 3;
-            case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:    return 2;
-            case VK_PHYSICAL_DEVICE_TYPE_CPU:            return 1;
-            default:                                     return 0;
+            case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:   return 4; // dedicated card, fastest
+            case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return 3; // shares system RAM
+            case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:    return 2; // virtualized passthrough
+            case VK_PHYSICAL_DEVICE_TYPE_CPU:            return 1; // software rasterizer (llvmpipe)
+            default:                                     return 0; // VK_PHYSICAL_DEVICE_TYPE_OTHER
         }
     };
+    // hasComputeQueue: true iff the device exposes at least one queue family
+    // with the compute capability bit set (required to dispatch our shaders).
     auto hasComputeQueue = [](VkPhysicalDevice dev) -> bool {
         uint32_t qCount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(dev, &qCount, nullptr);
@@ -180,10 +303,11 @@ bool VulkanContext::init() {
         return false;
     };
 
+    // Single pass: keep the compute-capable device with the highest type score.
     physicalDevice = VK_NULL_HANDLE;
     int bestScore = -1;
     for (const auto& candidate : devices) {
-        if (!hasComputeQueue(candidate)) continue;
+        if (!hasComputeQueue(candidate)) continue;   // skip non-compute adapters
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(candidate, &props);
         int score = deviceScore(props.deviceType);
@@ -193,8 +317,9 @@ bool VulkanContext::init() {
         }
     }
     if (physicalDevice == VK_NULL_HANDLE) {
-        // No device advertised a compute queue; fall back to the first enumerated
-        // device and let the queue-family search below report the failure.
+        // No enumerated device advertised a compute queue. Fall back to the
+        // first device so the compute-queue search below produces a single,
+        // clear failure path rather than us erroring out here.
         physicalDevice = devices[0];
     } else {
         VkPhysicalDeviceProperties selProps;

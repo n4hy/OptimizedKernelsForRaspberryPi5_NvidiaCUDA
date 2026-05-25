@@ -1,6 +1,10 @@
 # OptMathKernels
 
+[![Latest Release](https://img.shields.io/badge/release-v0.5.14-blue)](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.14)
+
 **High-Performance Numerical Library for ARM SBCs and NVIDIA GPUs**
+
+> **Latest release:** [v0.5.14 — Discrete GPU preference & x86_64 dual-GPU benchmarks](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.14)
 
 OptMathKernels is a C++20 numerical library optimized for **Raspberry Pi 5**, **Orange Pi 6 Plus**, and **NVIDIA CUDA GPUs**. It seamlessly bridges **Eigen** (CPU), **ARM NEON** (SIMD), **ARM SVE2** (Scalable Vectors), **Vulkan** (Compute Shaders), and **CUDA** (NVIDIA GPUs) into a single, easy-to-use API.
 
