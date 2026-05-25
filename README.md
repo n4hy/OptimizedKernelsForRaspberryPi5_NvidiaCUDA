@@ -1085,6 +1085,67 @@ On x86_64 the CUDA suite is built (running on the RTX 5070 Ti) in place of the A
 
 ---
 
+### x86_64 Desktop Benchmark Results (Intel Core Ultra 9 285K + RTX 5090)
+
+Tested on an Intel Core Ultra 9 285K (24 cores @ 5.5 GHz; L1 48 KiB, L2 3 MiB, L3 36 MiB) with a discrete **NVIDIA GeForce RTX 5090** (Blackwell, SM 10.0, 32 GB; CUDA 13.0.88, driver 580.126.20, Vulkan 1.3.275). Built with the default options (`ENABLE_CUDA=ON`, `ENABLE_VULKAN=ON`, NEON/SVE2 left on but inactive on x86_64), Release, C++20.
+
+> The same caveats as the 275HX/5070 Ti section above apply: NEON/SVE2-direct benchmark cases report `ERROR OCCURRED: 'NEON not available'` on x86_64 and are skipped here; CPU figures come from the Eigen-reference and scalar-fallback paths. The Vulkan microbenchmarks are end-to-end (allocation + host↔device copy per iteration), so the discrete RTX pays PCIe transfer latency and these numbers are **transfer-bound, not** the RTX 5090's peak compute. The Vulkan backend auto-selects the discrete GPU and logs `[Vulkan] Selected GPU: NVIDIA GeForce RTX 5090`.
+
+#### Vulkan GPU — Matrix Multiply (RTX 5090)
+
+| Size | RTX 5090 | Notes |
+|------|----------|-------|
+| 64x64 | 1.28 GFLOPS | Dispatch/transfer bound |
+| 128x128 | 7.07 GFLOPS | Overhead dominated |
+| 256x256 | 22.9 GFLOPS | Ramping up |
+| 512x512 | 54.8 GFLOPS | Compute growing |
+| 1024x1024 | **114 GFLOPS** | Compute begins to dominate |
+
+#### Vulkan GPU — Other Compute Kernels (largest size shown)
+
+| Benchmark | Size | RTX 5090 |
+|-----------|------|----------|
+| **Vec Add** | 4M | 633 MiB/s |
+| **Vec Mul** | 4M | 631 MiB/s |
+| **Vec Dot** | 4M | 579 MFLOPS |
+| **Reduce Sum** | 4M | 577 MFLOPS |
+| **Conv1D** | 262144 / 128 | 15.6 GFLOPS |
+| **Conv2D** | 512 / 7 | 6.01 GFLOPS |
+| **Prefix Sum** | 4096 | 2.11 GFLOPS |
+| **Mat Transpose** | 2048 | 398 MiB/s |
+
+#### CPU Reference (Eigen / scalar — NEON disabled on x86_64)
+
+| Benchmark | Size | Time | Throughput |
+|-----------|------|------|------------|
+| **Eigen GEMM** | 128 | 75.3 μs | 55.7 GFLOPS |
+| **Eigen GEMM** | 512 | 4.67 ms | 57.5 GFLOPS |
+| **Cross-Correlation (scalar)** | 128 | 2.88 μs | 11.4 GFLOPS |
+| **Complex XCorr (scalar)** | 1024 | 391 μs | 21.4 GFLOPS |
+| **std::exp** | 1M | 1.12 ms | 936 MFLOPS |
+| **std::sin** | 1M | 1.53 ms | 683 MFLOPS |
+
+#### Radar Signal Processing (CPU scalar paths)
+
+| Benchmark | Parameters | Time | FLOPS |
+|-----------|-----------|------|-------|
+| **CAF** | 4096 samples, 41 Doppler, 100 range | 6.71 ms | 25.0 GFLOPS |
+| **CAF** | 65536 samples, 101 Doppler, 500 range | 1.25 s | 26.5 GFLOPS |
+| **CFAR CA 1D** | 64K samples | 2.89 ms | 2.90 GFLOPS |
+| **CFAR 2D** | 512x1024 range-Doppler | 2.75 ms | 12.2 GFLOPS |
+| **NLMS Filter** | 256K samples, 128 taps | 14.1 ms | 9.50 GFLOPS |
+| **MTI Filter** | 256 pulses x 2048 range | 817 μs | 3.82 GFLOPS |
+| **Beamform (Delay-Sum)** | 16 elements, 64K samples | 1.46 ms | 1.44 GFLOPS |
+| **Steering Vector** | 64 elements | 867 ns | 143 M items/s |
+
+(`Beamform (Phase)` is NEON-only and reports `NEON not available` on x86_64.)
+
+#### Test Results (x86_64 — 16/16 Suites Pass)
+
+All 16 suites pass in 14.2 s; the CUDA suite runs on the RTX 5090, and NEON suites pass via scalar fallbacks. The per-suite breakdown is identical to the 275HX/5070 Ti table above (same test binaries), with `test_cuda_kernels` (36 tests) executing on CUDA 13.0 / SM 10.0 hardware.
+
+---
+
 ## Troubleshooting
 
 ### Build Issues
