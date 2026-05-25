@@ -989,6 +989,98 @@ Vulkan     : 7.12 ms,  Norm Diff: 8.16e-05
 
 ---
 
+### x86_64 Workstation Benchmark Results (Intel Core Ultra 9 275HX + RTX 5070 Ti)
+
+Tested on Intel Core Ultra 9 275HX (24 cores @ 5.3 GHz; L1 48 KiB, L2 3 MiB, L3 36 MiB) with **two** Vulkan-capable GPUs available: an integrated **Intel Graphics (Arrow Lake)** iGPU and a discrete **NVIDIA GeForce RTX 5070 Ti Laptop GPU** (Blackwell, CUDA 13.1, driver 595.71.05). Built with `-DENABLE_NEON=OFF -DENABLE_SVE2=OFF -DENABLE_CUDA=ON -DENABLE_VULKAN=ON`, Release, C++20.
+
+> **NEON/SVE2 benchmarks do not apply here** — on x86_64 the NEON-direct benchmark cases report `ERROR OCCURRED: 'NEON not available'` (the bench path calls the ARM intrinsics directly with no scalar fallback). They are retained for the Raspberry Pi 5 / Orange Pi 6 Plus targets above. The CPU numbers below come from the Eigen-reference and scalar-fallback paths that the same benchmark binaries also exercise.
+
+> **Selecting the GPU for Vulkan:** the backend ranks physical devices by type and prefers a discrete GPU (discrete > integrated > virtual > CPU), so on this machine it selects the RTX 5070 Ti automatically and logs `[Vulkan] Selected GPU: ...`. To benchmark the integrated GPU instead, force the Intel ICD so only it enumerates:
+> ```bash
+> VK_DRIVER_FILES=/usr/share/vulkan/icd.d/intel_icd.json ./benchmarks/bench_vulkan_matmul
+> ```
+
+#### Vulkan GPU — Matrix Multiply (Intel iGPU vs NVIDIA RTX 5070 Ti)
+
+| Size | Intel iGPU (ARL) | NVIDIA RTX 5070 Ti | Notes |
+|------|------------------|--------------------|-------|
+| 64x64 | 3.53 GFLOPS | 1.08 GFLOPS | Dispatch/transfer bound |
+| 128x128 | 12.8 GFLOPS | 5.56 GFLOPS | Overhead dominated |
+| 256x256 | 30.9 GFLOPS | 20.3 GFLOPS | Ramping up |
+| 512x512 | 63.1 GFLOPS | 50.0 GFLOPS | Compute growing |
+| 1024x1024 | **124 GFLOPS** | **121 GFLOPS** | Compute-bound; converge |
+
+> **Why the iGPU often looks faster here:** these are end-to-end microbenchmarks — each iteration includes buffer allocation and host↔device copy. The discrete RTX pays PCIe transfer latency while the iGPU shares system memory, so for small/transfer-bound sizes the iGPU wins. Only at 1024² does compute begin to dominate and the two converge. These figures are *not* a measure of the RTX 5070 Ti's peak compute — sustained on-device fp32 throughput is far higher; the benchmark harness is transfer-bound by design.
+
+#### Vulkan GPU — Other Compute Kernels (largest size shown)
+
+| Benchmark | Size | Intel iGPU | NVIDIA RTX 5070 Ti |
+|-----------|------|-----------|--------------------|
+| **Vec Add** | 4M | 629 MiB/s | 613 MiB/s |
+| **Vec Mul** | 4M | 784 MiB/s | 611 MiB/s |
+| **Vec Dot** | 4M | 971 MFLOPS | 734 MFLOPS |
+| **Reduce Sum** | 4M | 860 MFLOPS | 646 MFLOPS |
+| **Conv1D** | 262144 / 128 | 18.5 GFLOPS | 12.1 GFLOPS |
+| **Conv2D** | 512 / 7 | 7.26 GFLOPS | 5.54 GFLOPS |
+| **Mat Transpose** | 1024 | 625 MiB/s | 525 MiB/s |
+| **Prefix Sum** | 4096 | 2.47 GFLOPS | 2.47 GFLOPS |
+
+(Same transfer-bound caveat applies; the iGPU's shared memory favors these data-movement-heavy kernels.)
+
+#### CPU Reference (Eigen / scalar — NEON disabled on x86_64)
+
+| Benchmark | Size | Time | Throughput |
+|-----------|------|------|------------|
+| **Eigen GEMM** | 128 | 81.6 μs | 51.4 GFLOPS |
+| **Eigen GEMM** | 512 | 5.10 ms | 52.7 GFLOPS |
+| **Eigen Dot** | 4096 | 191 ns | 42.9 GFLOPS |
+| **Eigen Dot** | 4M | 915 μs | 9.17 GFLOPS |
+| **Cross-Correlation (scalar)** | 128 | 3.16 μs | 10.4 GFLOPS |
+| **Complex XCorr (scalar)** | 1024 | 400 μs | 21.0 GFLOPS |
+| **Scalar Sigmoid** | 1M | 1.42 ms | 1.47 GFLOPS |
+| **std::tanh** | 1M | 2.64 ms | 396 MFLOPS |
+| **Window Generate** | 16384 | 37.0 μs | 443 M items/s |
+
+#### Radar Signal Processing (CPU scalar paths)
+
+| Benchmark | Parameters | Time | FLOPS |
+|-----------|-----------|------|-------|
+| **CAF** | 4096 samples, 41 Doppler, 100 range | 6.99 ms | 24.0 GFLOPS |
+| **CAF** | 65536 samples, 101 Doppler, 500 range | 1.29 s | 25.7 GFLOPS |
+| **CFAR CA 1D** | 64K samples | 3.13 ms | 2.68 GFLOPS |
+| **CFAR 2D** | 512x1024 range-Doppler | 2.79 ms | 12.0 GFLOPS |
+| **NLMS Filter** | 256K samples, 128 taps | 14.6 ms | 9.17 GFLOPS |
+| **MTI Filter** | 256 pulses x 2048 range | 804 μs | 3.88 GFLOPS |
+| **Beamform (Delay-Sum)** | 16 elements, 64K samples | 1.49 ms | 1.40 GFLOPS |
+| **Steering Vector** | 64 elements | 5.85 μs | 339 M items/s |
+
+(`Beamform (Phase)` is NEON-only and reports `NEON not available` on x86_64.)
+
+#### Test Results (x86_64 — 16/16 Suites Pass, 138 tests)
+
+On x86_64 the CUDA suite is built (running on the RTX 5070 Ti) in place of the ARM-only SVE2 suite; NEON suites pass via scalar fallbacks.
+
+| Test Suite | Tests | Status | Backend |
+|------------|-------|--------|---------|
+| `test_basic` | 1 | Passed | Core |
+| `test_neon_kernels` | 4 | Passed | NEON (scalar fallback) |
+| `test_neon_complex` | 7 | Passed | NEON (scalar fallback) |
+| `test_neon_transcendentals` | 10 | Passed | NEON (scalar fallback) |
+| `test_neon_resample` | 7 | Passed | NEON (scalar fallback) |
+| `test_neon_iir` | 10 | Passed | NEON (scalar fallback) |
+| `test_neon_conv2d` | 9 | Passed | NEON (scalar fallback) |
+| `test_neon_linalg` | 21 | Passed | NEON (scalar fallback) |
+| `test_platform` | 9 | Passed | Platform |
+| `test_vulkan_vector` | 1 | Passed | Vulkan |
+| `test_vulkan_matrix` | 1 | Passed | Vulkan |
+| `test_vulkan_dsp` | 1 | Passed | Vulkan |
+| `test_vulkan_advanced` | 2 | Passed | Vulkan |
+| `test_radar_caf` | 9 | Passed | Radar |
+| `test_radar_cfar` | 10 | Passed | Radar |
+| `test_cuda_kernels` | 36 | Passed | CUDA (RTX 5070 Ti) |
+
+---
+
 ## Troubleshooting
 
 ### Build Issues

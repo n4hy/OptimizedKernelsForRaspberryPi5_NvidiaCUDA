@@ -154,8 +154,53 @@ bool VulkanContext::init() {
     std::vector<VkPhysicalDevice> devices(deviceCount);
     vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
 
-    // Pick the first one for now
-    physicalDevice = devices[0];
+    // Pick the best physical device. On multi-GPU systems (e.g. a laptop with
+    // an integrated GPU alongside a discrete card) Vulkan may enumerate the
+    // slower integrated GPU first, so rank by type and prefer a discrete GPU:
+    // discrete > integrated > virtual > CPU. Only devices that expose a compute
+    // queue are eligible, so the queue-family search below is guaranteed to
+    // succeed for the chosen device.
+    auto deviceScore = [](VkPhysicalDeviceType type) -> int {
+        switch (type) {
+            case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:   return 4;
+            case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return 3;
+            case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:    return 2;
+            case VK_PHYSICAL_DEVICE_TYPE_CPU:            return 1;
+            default:                                     return 0;
+        }
+    };
+    auto hasComputeQueue = [](VkPhysicalDevice dev) -> bool {
+        uint32_t qCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(dev, &qCount, nullptr);
+        std::vector<VkQueueFamilyProperties> qFamilies(qCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(dev, &qCount, qFamilies.data());
+        for (const auto& q : qFamilies) {
+            if (q.queueFlags & VK_QUEUE_COMPUTE_BIT) return true;
+        }
+        return false;
+    };
+
+    physicalDevice = VK_NULL_HANDLE;
+    int bestScore = -1;
+    for (const auto& candidate : devices) {
+        if (!hasComputeQueue(candidate)) continue;
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(candidate, &props);
+        int score = deviceScore(props.deviceType);
+        if (score > bestScore) {
+            bestScore = score;
+            physicalDevice = candidate;
+        }
+    }
+    if (physicalDevice == VK_NULL_HANDLE) {
+        // No device advertised a compute queue; fall back to the first enumerated
+        // device and let the queue-family search below report the failure.
+        physicalDevice = devices[0];
+    } else {
+        VkPhysicalDeviceProperties selProps;
+        vkGetPhysicalDeviceProperties(physicalDevice, &selProps);
+        std::cerr << "[Vulkan] Selected GPU: " << selProps.deviceName << "\n";
+    }
 
     // 3. Find Queue Family
     uint32_t queueFamilyCount = 0;
