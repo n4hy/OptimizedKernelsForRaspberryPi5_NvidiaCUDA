@@ -1,3 +1,68 @@
+/**
+ * OptMathKernels Platform Detection
+ * Copyright (c) 2026 Dr Robert W McGwier, PhD
+ * SPDX-License-Identifier: MIT
+ *
+ * Runtime CPU topology, feature, and cache detection used to tune the NEON/SVE2
+ * kernels and to pin work to the right cores on ARM big.LITTLE SoCs (Raspberry
+ * Pi 5 Cortex-A76, Orange Pi 6 Plus / CIX P1 Cortex-A720+A520). All probing is
+ * Linux-specific via /proc and sysfs; on non-Linux (or non-ARM) builds the
+ * queries degrade to safe single-core / feature-absent defaults.
+ *
+ * ---------------------------------------------------------------------------
+ * 1. Sysfs Parsing Helpers  (read_sysfs_string, read_sysfs_uint,
+ *    parse_cache_size)
+ * ---------------------------------------------------------------------------
+ *    Thin readers for /sys entries, with parse_cache_size handling the K/M
+ *    suffixes used by cacheinfo `size` files (e.g. "512K", "12M").
+ *
+ * ---------------------------------------------------------------------------
+ * 2. CPU Info Detection  (build_cpu_info)
+ * ---------------------------------------------------------------------------
+ *    The core probe. From /proc/cpuinfo it reads online core count, per-core
+ *    "CPU part" IDs, the model name, and the ARMv9 feature flags this library
+ *    cares about (sve2, fcma, i8mm, bf16 — matched with surrounding spaces to
+ *    avoid substring false positives). Per-core max frequency and capacity come
+ *    from sysfs cpufreq/cpu_capacity. Cores are then:
+ *      - grouped into clusters by distinct max frequency,
+ *      - classified performance vs efficiency (Cortex-A520 part 0xd80, or
+ *        capacity < 512, => efficiency), with performance cores sorted fastest
+ *        first by capacity,
+ *      - probed for L2/L3 cache size (preferring a performance core, since A720
+ *        L2 > A520 L2), with model-based heuristic fallbacks when sysfs is
+ *        silent (A720/A76 L2=512KB, A520 L2=256KB; CIX P1 L3=12MB, Pi5 L3=2MB).
+ *    SVE vector length is queried via prctl(PR_SVE_GET_VL). Includes a
+ *    part-ID -> Cortex model-name table for kernels that lack "model name".
+ *
+ * ---------------------------------------------------------------------------
+ * 3. Cached Singleton Accessor  (detect_cpu_info)
+ * ---------------------------------------------------------------------------
+ *    build_cpu_info() is expensive, so it runs once behind std::call_once and
+ *    every public query returns a reference to the cached CpuInfo.
+ *
+ * ---------------------------------------------------------------------------
+ * 4. Core Topology Queries  (get_performance_cores, get_efficiency_cores)
+ * ---------------------------------------------------------------------------
+ *
+ * ---------------------------------------------------------------------------
+ * 5. Thread Affinity  (pin_thread_to_performance_cores, pin_thread_to_core)
+ * ---------------------------------------------------------------------------
+ *    sched_setaffinity wrappers to keep latency-sensitive kernels off the
+ *    little cores; no-ops returning -1 on non-Linux.
+ *
+ * ---------------------------------------------------------------------------
+ * 6. Feature & Cache Accessors  (get_sve_vector_length, get_l2_cache_size,
+ *    get_l3_cache_size)
+ * ---------------------------------------------------------------------------
+ *
+ * ---------------------------------------------------------------------------
+ * 7. GEMM Cache-Blocking Selection  (get_gemm_mc / _kc / _nc)
+ * ---------------------------------------------------------------------------
+ *    Returns the MC/KC/NC blocking parameters the NEON/SVE2 GEMM microkernels
+ *    use, chosen from the detected L3 size: large L3 (>=8MB, e.g. CIX P1 12MB)
+ *    => MC=256, KC=512, NC=2048 (B panel = 4MB, ~33% of L3); small L3 (<8MB,
+ *    e.g. Pi5 2MB) => MC=128, KC=256, NC=512.
+ */
 #include "optmath/platform.hpp"
 
 #include <fstream>
