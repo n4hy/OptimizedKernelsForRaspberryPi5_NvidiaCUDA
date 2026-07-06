@@ -1,0 +1,23 @@
+# Auxiliary Python tooling for OptMathKernels (OptimizedKernelsForRaspberryPi5_NvidiaCUDA)
+#
+# The library itself is C++/CUDA built with CMake and has NO Python runtime
+# dependency. These packages are for development convenience only:
+#   - generating/verifying golden reference vectors against the C++/CUDA kernels
+#   - plotting benchmark and profiling output
+#   - any Python-side validation tests
+#
+# Lower bounds match the versions present in the local `optenv` venv.
+# Install into the venv:   optenv/bin/python -m pip install -r requirements.txt
+
+# Reference numerics & golden-vector generation
+numpy>=2.3.5
+
+# Signal-processing references mirroring the kernels
+# (FFT, IIR filters, resampling, conv2d, CFAR/CAF, transcendentals)
+scipy>=1.16.3
+
+# Benchmark / profiling result plotting
+matplotlib>=3.10.7
+
+# Test runner for Python-side validation harnesses
+pytest>=9.0.2
