@@ -7,7 +7,34 @@
 #   - any Python-side validation tests
 #
 # Lower bounds match the versions present in the local `optenv` venv.
-# Install into the venv:   optenv/bin/python -m pip install -r requirements.txt
+#
+# Create the venv and install:
+#   python3 -m venv optenv
+#   optenv/bin/python -m pip install -r requirements.txt
+#
+# ---------------------------------------------------------------------------
+# SYSTEM (non-pip) DEPENDENCIES — install with apt, NOT pip
+# ---------------------------------------------------------------------------
+# The build itself needs these C++/CMake toolchain and Vulkan packages. They
+# are OS packages and cannot be installed from PyPI; listed here so this file
+# is the single place that records everything the repo needs.
+#
+#   sudo apt update
+#   sudo apt install -y \
+#       build-essential cmake git pkg-config \
+#       libeigen3-dev \                 # Eigen3 (CPU linear algebra)
+#       libvulkan-dev mesa-vulkan-drivers vulkan-tools \  # Vulkan runtime/headers
+#       glslang-tools \                 # glslangValidator — compiles .glsl -> .spv (REQUIRED for Vulkan shaders)
+#       glslc \                         # shaderc glslc (alternative GLSL->SPIR-V compiler)
+#       spirv-tools                     # spirv-val / spirv-opt (SPIR-V validation & optimization)
+#
+# Without glslang-tools, CMake configures fine but prints
+#   "glslangValidator not found. Shaders will not be compiled."
+# and the Vulkan backend has no compute shaders to load at runtime.
+#
+# Optional NVIDIA CUDA support additionally needs cuda-toolkit-12-8+ (see README).
+# ---------------------------------------------------------------------------
+
 
 # Reference numerics & golden-vector generation
 numpy>=2.3.5

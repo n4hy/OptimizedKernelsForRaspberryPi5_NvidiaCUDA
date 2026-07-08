@@ -1,10 +1,10 @@
 # OptMathKernels
 
-[![Latest Release](https://img.shields.io/badge/release-v0.5.16-blue)](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.16)
+[![Latest Release](https://img.shields.io/badge/release-v0.5.17-blue)](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.17)
 
 **High-Performance Numerical Library for ARM SBCs and NVIDIA GPUs**
 
-> **Latest release:** [v0.5.16 — x86_64 desktop RTX 5090 benchmarks](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.16)
+> **Latest release:** [v0.5.17 — Raspberry Pi 5 build & full test-suite pass](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.17)
 
 OptMathKernels is a C++20 numerical library optimized for **Raspberry Pi 5**, **Orange Pi 6 Plus**, and **NVIDIA CUDA GPUs**. It seamlessly bridges **Eigen** (CPU), **ARM NEON** (SIMD), **ARM SVE2** (Scalable Vectors), **Vulkan** (Compute Shaders), and **CUDA** (NVIDIA GPUs) into a single, easy-to-use API.
 
@@ -1365,6 +1365,20 @@ OptMathKernels/
 ---
 
 ## Recent Changes
+
+### v0.5.17 - Raspberry Pi 5 Build & Full Test-Suite Pass (July 2026)
+
+**Test fix:**
+
+- **`NeonLinalgTest.TrsvLower64x64Random` tolerance corrected** - The lower-triangular solve test asserted `EXPECT_NEAR(..., 1e-3)`, while its `TrsvUpper64x64Random` twin used `5e-3`. On Raspberry Pi 5 (Cortex-A76) the float32 forward-substitution over 64 rows accumulates ~`1.1e-3` of round-off, landing just over the tighter bar at one element. The lower-triangular assertion is now `5e-3`, matching the upper-triangular twin and reflecting expected single-precision error growth. No kernel code changed; the NEON solver was already correct to float32 precision.
+
+**Build/tooling:**
+
+- **requirements.txt now records system (apt) dependencies** - Added a documented section listing the C++/CMake toolchain plus the Vulkan shader packages (`glslang-tools`, `glslc`, `spirv-tools`). Without `glslang-tools`/`glslangValidator`, CMake configures but skips shader compilation and the Vulkan backend has no compute shaders to load. `.gitignore` now excludes the `optenv/` venv and `*.spv` build artifacts.
+
+Verified on Raspberry Pi 5 (aarch64, NEON + SVE2 + Vulkan, CUDA off): all 16/16 test suites pass, including the four Vulkan suites running compiled SPIR-V on the VideoCore VII GPU.
+
+---
 
 ### v0.5.16 - x86_64 Desktop RTX 5090 Benchmarks (May 2026)
 

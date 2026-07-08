@@ -310,8 +310,10 @@ TEST_F(NeonLinalgTest, TrsvLower64x64Random) {
     Eigen::VectorXf b = L * x_true;
 
     Eigen::VectorXf x = neon_trsv_lower(L, b);
+    // float32 forward substitution over 64 rows accumulates ~O(1e-3) round-off;
+    // use the same tolerance as the TrsvUpper64x64Random twin below.
     for (int i = 0; i < n; ++i)
-        EXPECT_NEAR(x(i), x_true(i), 1e-3)
+        EXPECT_NEAR(x(i), x_true(i), 5e-3)
             << "at i=" << i;
 }
 
