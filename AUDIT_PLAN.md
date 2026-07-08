@@ -1,8 +1,11 @@
 # OptMathKernels Codebase Audit Plan
 
-**Date:** 2026-03-06 (Updated: 2026-03-31, Reviewed: 2026-03-31)
+**Date:** 2026-03-06 (Updated: 2026-03-31, Reviewed: 2026-03-31, Re-audited: 2026-07-08 for v0.5.17)
 **Auditor:** Claude Code
 **Scope:** Full codebase audit for errors, bugs, and optimization opportunities
+
+> **See the [July 2026 Re-Audit (v0.5.17)](#july-2026-re-audit-v0517) section below** for the
+> current verified status of the open items and newly-found defects in the CUDA-13-era code.
 
 ---
 
@@ -22,6 +25,66 @@ Comprehensive audit of 56+ source files revealed **37 issues** across severity l
 | `98f463a` | Fix numerical stability, error handling, and platform test portability |
 | `4f784eb` | v0.5.2: Fix critical bugs across SVE2, CUDA, Vulkan, NEON, and platform backends |
 | v0.5.7 | SVE2 pipeline optimization: inline transcendentals, vectorize GEMM microkernel, vectorize CAF Doppler shift |
+
+---
+
+## July 2026 Re-Audit (v0.5.17)
+
+Re-verification of the March open items against the current tree (commit `cb4b9ef`, v0.5.17),
+plus a fresh scan that surfaced new latent defects introduced during the CUDA 13 / Blackwell
+work. Build + full test suite were re-run on the x86_64 + RTX dev box: **16/16 suites, 138
+tests pass, clean build, no regressions.** Findings below are static-analysis defects not
+exercised by the current tests.
+
+### Status of previously-open items
+
+| # | Item | v0.5.17 status | Evidence |
+|---|------|----------------|----------|
+| 4 | NEON GEMM packing / slow Eigen wrapper | ✅ FIXED | `neon_gemm_optimized.cpp:294-308` wrapper delegates to blocked 8×8 path; packing indexing consistent |
+| 9 | CUDA missing error checks | ⚠️ PARTIAL | malloc/cuFFT now checked; `cudaMemcpyAsync` (`cuda_backend.cpp:513,523`) and `cudaEventRecord` (`:761,768`) still unchecked |
+| 10 | measure_bandwidth memory leak | ✅ FIXED | `cuda_backend.cpp:869-873` frees all resources |
+| 18 | NEON `n*n` overflow before alloc | ❌ OPEN | `neon_linalg.cpp:473` `std::vector<float> LU(n*n)` unguarded |
+| 19 | CUDA FFT size int overflow | ✅ FIXED | `cuda_radar.cu:650-651` now `size_t fft_len` |
+| 20 / O6 | Resampler O(n_taps) memmove/sample | ❌ OPEN | `neon_resample.cpp:73-76` |
+| 22 | SVE2 CAF Doppler phase not vectorized | ⚠️ PARTIAL | trig vectorized (`sve2_radar.cpp:80-81`); only scalar phase-ramp fill remains |
+| 27/28 | CUDA softmax/transpose bank conflicts | ✅ FIXED | transpose padded `[TILE_DIM+1]` (`cuda_kernels.cu:433`); softmax conflict-free |
+| 29 / O4 | Excessive `cudaDeviceSynchronize` in CAF | ❌ OPEN | 5 syncs/Doppler-bin `cuda_radar.cu:811-843` |
+| 7 (Vulkan) | Dispatch group counts unvalidated | ❌ OPEN | `vulkan_backend.cpp:611,702` vs `maxComputeWorkGroupCount` |
+
+### New defects found in v0.5.17 (CUDA-13-era)
+
+| ID | Sev | File:line | Defect |
+|----|-----|-----------|--------|
+| N1 | HIGH | `cuda_kernels.cu:1444-1453`, `cuda_radar.cu:730,1060`, `cuda_complex.cu:1285-1297` | `int*int*sizeof` allocation/copy size overflows before `size_t` promotion → under-allocation + device OOB |
+| N2 | HIGH | `cuda_backend.cpp:326` | `CudaContext::init` leaks cuBLAS + cuSOLVER handles when `cudaStreamCreate` fails (`cleanup()` skips them because `m_initialized` never set) |
+| N3 | HIGH | `cuda_kernels.cu:132`, `cuda_radar.cu:116` | `div_ceil(int,int)` fed `size_t` sizes truncates launch grid for `n > INT_MAX` → silent partial results |
+| N4 | MED | `cuda_kernels.cu` launch sites, `cuda_radar.cu:784-848` | CUDA kernel launches almost universally unchecked (no `cudaGetLastError`) |
+| N5 | MED | `cuda_radar.cu:1120,1206` | Steering-vector kernel uses `n_elements` as block dim → silent all-zero output when `>1024` |
+| N6 | MED | `cuda_radar.cu:1037,1148` | `180.0f/(n_angles-1)` divides by zero when `n_angles==1` |
+| N7 | MED | `vulkan_backend.cpp:165,497-564` | `readFile`/`getOrCreatePipeline` throw `std::runtime_error` that escapes the return-empty-vector API boundary → `std::terminate` instead of CPU fallback if `.spv` missing |
+| N8 | MED | `vulkan_backend.cpp:479` | Pipeline cache keyed by shader name only despite header claiming name+bufcount+pushsize → latent layout-mismatch corruption |
+| N9 | MED | `vulkan_backend.cpp:673-746` | Command pool + queue submit used with no mutex → data race across host threads |
+| N10 | MED | `neon_resample.cpp:80-85,110` | Inner `while(phase_acc<L)` can emit more than the `in*L/M+1` estimate → heap overflow |
+| N11/N12 | MED | `cuda_backend.cpp:835-867`, `cuda_radar.cu:791,821,837` | `measure_bandwidth` unchecked allocs + `/ms` div-by-zero; cuFFT return codes ignored in CAF |
+| N13-N15 | LOW | `cuda_kernels.cu:575-649`, `neon_cholesky_f32:254` | `n==0` uninitialized reduction return; denormal `diag` → Inf in Cholesky |
+
+Clean signals: `src/` has no leftover TODO/FIXME/HACK markers; Eigen host-wrappers have proper
+`cleanup` lambdas + CPU fallbacks; the unparallelizable NLMS kernel is correctly `#if 0`-guarded.
+
+### Remediation ordering (v0.5.18 target)
+
+1. Shared guardrails: `CUDA_KERNEL_CHECK()` + `checked_bytes()` / `size_t div_ceil` helpers.
+2. HIGH: N1, N2, N3, #18.
+3. Thread-safety (becomes **required** if OpenMP/libgomp CPU parallelism lands): Issue 16 (verify
+   `thread_local` GEMM scratch + privatize per-iteration temporaries), N9 (Vulkan pool mutex), N8.
+4. MED robustness: N4-N7, N10-N12, N15, #7, #9.
+5. Deferred perf: #29/O4 (CAF streams), #20/O6 (resampler circular buffer).
+
+### Infrastructure gaps (unchanged since March)
+
+No CI/CD, no `.clang-format`/`.clang-tidy`/static analysis, no sanitizer/coverage build,
+`test_cuda_radar.cpp` written but disabled (`tests/CMakeLists.txt:91-98`), thin SVE2/Vulkan/CUDA-
+complex coverage, no cross-backend numerical-equivalence test.
 
 ---
 
