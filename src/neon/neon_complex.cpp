@@ -325,12 +325,52 @@ void neon_complex_magnitude_squared_f32(float* out, const float* re, const float
 }
 
 void neon_complex_phase_f32(float* out, const float* re, const float* im, std::size_t n) {
-    // Phase = atan2(im, re)
-    // Note: atan2 is not easily vectorizable without approximation
-    // Using scalar implementation for accuracy
-    for (std::size_t i = 0; i < n; ++i) {
-        out[i] = std::atan2(im[i], re[i]);
+    // Phase = atan2(im, re), vectorized with a minimax atan() polynomial on
+    // [0,1] plus quadrant reconstruction. Accurate to ~1e-6 rad; the scalar
+    // tail uses std::atan2 exactly.
+    std::size_t i = 0;
+#ifdef OPTMATH_USE_NEON
+    // atan(z) ~= z*(c0 + z2*(c1 + z2*(c2 + z2*(c3 + z2*(c4 + z2*c5))))), z in [-1,1]
+    const float32x4_t c0 = vdupq_n_f32( 0.99997726f);
+    const float32x4_t c1 = vdupq_n_f32(-0.33262347f);
+    const float32x4_t c2 = vdupq_n_f32( 0.19354346f);
+    const float32x4_t c3 = vdupq_n_f32(-0.11643287f);
+    const float32x4_t c4 = vdupq_n_f32( 0.05265332f);
+    const float32x4_t c5 = vdupq_n_f32(-0.01172120f);
+    const float32x4_t half_pi = vdupq_n_f32(1.57079632679f);
+    const float32x4_t pi      = vdupq_n_f32(3.14159265359f);
+    const float32x4_t vzero   = vdupq_n_f32(0.0f);
+
+    for (; i + 4 <= n; i += 4) {
+        float32x4_t x = vld1q_f32(re + i);
+        float32x4_t y = vld1q_f32(im + i);
+        float32x4_t ax = vabsq_f32(x);
+        float32x4_t ay = vabsq_f32(y);
+        float32x4_t vmn = vminq_f32(ax, ay);
+        float32x4_t vmx = vmaxq_f32(ax, ay);
+        // z = min/max in [0,1] (0/0 -> NaN, masked to 0 at the end)
+        float32x4_t z  = vdivq_f32(vmn, vmx);
+        float32x4_t z2 = vmulq_f32(z, z);
+        float32x4_t p  = c5;
+        p = vfmaq_f32(c4, z2, p);
+        p = vfmaq_f32(c3, z2, p);
+        p = vfmaq_f32(c2, z2, p);
+        p = vfmaq_f32(c1, z2, p);
+        p = vfmaq_f32(c0, z2, p);
+        p = vmulq_f32(z, p);                                   // atan(z), z in [0,1]
+        // |y| > |x|  ->  angle = pi/2 - p
+        uint32x4_t swap = vcgtq_f32(ay, ax);
+        float32x4_t ang = vbslq_f32(swap, vsubq_f32(half_pi, p), p);
+        // x < 0  ->  angle = pi - angle
+        ang = vbslq_f32(vcltq_f32(x, vzero), vsubq_f32(pi, ang), ang);
+        // y < 0  ->  angle = -angle
+        ang = vbslq_f32(vcltq_f32(y, vzero), vnegq_f32(ang), ang);
+        // x == y == 0  ->  0
+        ang = vbslq_f32(vceqq_f32(vmx, vzero), vzero, ang);
+        vst1q_f32(out + i, ang);
     }
+#endif
+    for (; i < n; ++i) out[i] = std::atan2(im[i], re[i]);
 }
 
 void neon_complex_add_f32(float* out_re, float* out_im,

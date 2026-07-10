@@ -506,34 +506,52 @@ Eigen::MatrixXf caf(const Eigen::VectorXcf& ref,
 // CFAR Detection
 // =========================================================================
 
+// Sum of a contiguous float run (NEON 4-wide, two accumulators + scalar tail).
+static inline float cfar_run_sum(const float* p, std::size_t len) {
+    float s = 0.0f;
+    std::size_t k = 0;
+#ifdef OPTMATH_USE_NEON
+    float32x4_t a0 = vdupq_n_f32(0.0f), a1 = vdupq_n_f32(0.0f);
+    for (; k + 8 <= len; k += 8) {
+        a0 = vaddq_f32(a0, vld1q_f32(p + k));
+        a1 = vaddq_f32(a1, vld1q_f32(p + k + 4));
+    }
+    for (; k + 4 <= len; k += 4) a0 = vaddq_f32(a0, vld1q_f32(p + k));
+    s = vaddvq_f32(vaddq_f32(a0, a1));
+#endif
+    for (; k < len; ++k) s += p[k];
+    return s;
+}
+
 void cfar_ca_f32(std::uint8_t* detections, float* threshold,
                  const float* input, std::size_t n,
                  std::size_t guard_cells, std::size_t reference_cells,
                  float pfa_factor) {
 
+    const std::size_t win = guard_cells + reference_cells;
+
     // Each cell's threshold depends only on read-only input; fully independent.
     #pragma omp parallel for schedule(static)
     for (std::size_t i = 0; i < n; ++i) {
-        float sum = 0.0f;
-        std::size_t count = 0;
+        float sum;
+        std::size_t count;
 
-        // Left reference cells
-        for (std::size_t j = 1; j <= guard_cells + reference_cells; ++j) {
-            if (i >= j && j > guard_cells) {
-                sum += input[i - j];
-                count++;
-            }
+        // Interior fast path: both reference blocks are fully in bounds, so each
+        // is a contiguous run of `reference_cells` samples that NEON can sum.
+        //   left  = input[i-win .. i-guard-1], right = input[i+guard+1 .. i+win]
+        if (reference_cells > 0 && i >= win && i + win < n) {
+            sum = cfar_run_sum(input + (i - win), reference_cells)
+                + cfar_run_sum(input + (i + guard_cells + 1), reference_cells);
+            count = 2 * reference_cells;
+        } else {
+            // Edge cells: exact bounds-checked scalar accumulation.
+            sum = 0.0f; count = 0;
+            for (std::size_t j = 1; j <= win; ++j)
+                if (i >= j && j > guard_cells) { sum += input[i - j]; count++; }
+            for (std::size_t j = 1; j <= win; ++j)
+                if (i + j < n && j > guard_cells) { sum += input[i + j]; count++; }
         }
 
-        // Right reference cells
-        for (std::size_t j = 1; j <= guard_cells + reference_cells; ++j) {
-            if (i + j < n && j > guard_cells) {
-                sum += input[i + j];
-                count++;
-            }
-        }
-
-        // Compute threshold
         float avg = (count > 0) ? (sum / count) : 0.0f;
         float thresh = pfa_factor * avg;
 
