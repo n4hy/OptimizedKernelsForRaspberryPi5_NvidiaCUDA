@@ -24,6 +24,9 @@ namespace neon {
     void neon_sub_f32(float* out, const float* a, const float* b, std::size_t n);
     void neon_mul_f32(float* out, const float* a, const float* b, std::size_t n);
     void neon_div_f32(float* out, const float* a, const float* b, std::size_t n);
+    // Sign-preserving guarded division: denominator is nudged away from zero by a
+    // small epsilon so a zero/near-zero denominator yields a finite result.
+    void neon_safe_div_f32(float* out, const float* a, const float* b, std::size_t n);
 
     // Reductions
     float neon_norm_f32(const float* a, std::size_t n);
@@ -100,6 +103,18 @@ namespace neon {
      * Caller must allocate out with at least ceil(input_len * L / M) + 1 floats.
      */
     void neon_resample_oneshot_f32(float* out, std::size_t* output_len,
+                                    const float* in, std::size_t input_len,
+                                    const float* filter, std::size_t filter_len,
+                                    std::size_t L, std::size_t M);
+
+    /**
+     * @brief One-shot polyphase resampler with an explicit output-capacity guard.
+     * Identical to the overload above but never writes more than out_capacity
+     * floats to out. *output_len receives the number of samples actually written
+     * (always <= out_capacity), so a tight or mis-sized buffer can never overflow.
+     */
+    void neon_resample_oneshot_f32(float* out, std::size_t out_capacity,
+                                    std::size_t* output_len,
                                     const float* in, std::size_t input_len,
                                     const float* filter, std::size_t filter_len,
                                     std::size_t L, std::size_t M);

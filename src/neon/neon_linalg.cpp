@@ -258,8 +258,23 @@ int neon_cholesky_f32(float* A, std::size_t n, std::size_t lda) {
         A[j + j * lda] = std::sqrt(diag);
         float inv_diag = 1.0f / A[j + j * lda];
 
-        // Update column j below diagonal
-        for (std::size_t i = j + 1; i < n; ++i) {
+        // Update column j below diagonal. Vectorize over i (rows): for a fixed k,
+        // A[i..i+3 + k*lda] are 4 contiguous rows, so the rank-update loads are
+        // contiguous NEON loads; the k index (stride lda) stays a scalar broadcast.
+        std::size_t i = j + 1;
+#ifdef OPTMATH_USE_NEON
+        for (; i + 3 < n; i += 4) {
+            float32x4_t sum = vld1q_f32(&A[i + j * lda]);
+            for (std::size_t k = 0; k < j; ++k) {
+                float32x4_t aik = vld1q_f32(&A[i + k * lda]);
+                float32x4_t ajk = vdupq_n_f32(A[j + k * lda]);
+                sum = vfmsq_f32(sum, aik, ajk);   // sum -= aik * ajk (single-rounded)
+            }
+            sum = vmulq_n_f32(sum, inv_diag);
+            vst1q_f32(&A[i + j * lda], sum);
+        }
+#endif
+        for (; i < n; ++i) {
             float sum = A[i + j * lda];
             for (std::size_t k = 0; k < j; ++k) {
                 sum -= A[i + k * lda] * A[j + k * lda];
@@ -373,16 +388,43 @@ void neon_qr_f32(float* A, float* tau, std::size_t m, std::size_t n, std::size_t
         // For each column k: A[:,k] -= tau * (v^T * A[:,k]) * v
         for (std::size_t k = j + 1; k < n; ++k) {
             float* ak = A + j + k * lda;
-            // dot = v^T * A[:,k], with v[0] = 1
+            // dot = v^T * A[:,k], with v[0] = 1. col[] and ak[] are contiguous in
+            // i, so the reflector dot and axpy vectorize directly on NEON.
             float dot = ak[0];
+#ifdef OPTMATH_USE_NEON
+            float32x4_t vacc = vdupq_n_f32(0.0f);
+            std::size_t i = 1;
+            for (; i + 3 < len; i += 4) {
+                vacc = vfmaq_f32(vacc, vld1q_f32(&col[i]), vld1q_f32(&ak[i]));
+            }
+            dot += vaddvq_f32(vacc);
+            for (; i < len; ++i) {
+                dot += col[i] * ak[i];
+            }
+#else
             for (std::size_t i = 1; i < len; ++i) {
                 dot += col[i] * ak[i];
             }
+#endif
             // ak -= tau * dot * v
-            ak[0] -= tau[j] * dot;
-            for (std::size_t i = 1; i < len; ++i) {
-                ak[i] -= tau[j] * dot * col[i];
+            const float td = tau[j] * dot;
+            ak[0] -= td;
+#ifdef OPTMATH_USE_NEON
+            float32x4_t vtd = vdupq_n_f32(td);
+            std::size_t i2 = 1;
+            for (; i2 + 3 < len; i2 += 4) {
+                float32x4_t vak = vld1q_f32(&ak[i2]);
+                vak = vfmsq_f32(vak, vtd, vld1q_f32(&col[i2]));  // ak -= td * col
+                vst1q_f32(&ak[i2], vak);
             }
+            for (; i2 < len; ++i2) {
+                ak[i2] -= td * col[i2];
+            }
+#else
+            for (std::size_t i = 1; i < len; ++i) {
+                ak[i] -= td * col[i];
+            }
+#endif
         }
     }
 }

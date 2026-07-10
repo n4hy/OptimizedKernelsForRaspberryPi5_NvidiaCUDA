@@ -121,6 +121,16 @@ void neon_resample_oneshot_f32(float* out, std::size_t* output_len,
     *output_len = neon_resample_f32(out, in, input_len, state);
 }
 
+void neon_resample_oneshot_f32(float* out, std::size_t out_capacity,
+                                std::size_t* output_len,
+                                const float* in, std::size_t input_len,
+                                const float* filter, std::size_t filter_len,
+                                std::size_t L, std::size_t M) {
+    PolyphaseResamplerState state;
+    neon_resample_init(state, filter, filter_len, L, M);
+    *output_len = neon_resample_f32(out, out_capacity, in, input_len, state);
+}
+
 // Eigen wrapper
 Eigen::VectorXf neon_resample(const Eigen::VectorXf& in,
                                const Eigen::VectorXf& filter,
@@ -134,7 +144,10 @@ Eigen::VectorXf neon_resample(const Eigen::VectorXf& in,
     Eigen::VectorXf result(max_out);
 
     std::size_t actual_len = 0;
-    neon_resample_oneshot_f32(result.data(), &actual_len,
+    // Use the capacity-guarded one-shot: result is sized to the provable upper
+    // bound max_out, so this never truncates, but the guard makes the write
+    // bound explicit and defends against any future sizing regression.
+    neon_resample_oneshot_f32(result.data(), max_out, &actual_len,
                                in.data(), in.size(),
                                filter.data(), filter.size(),
                                L, M);
