@@ -22,8 +22,8 @@ TEST(NeonTranscendentalsTest, ExpApproximation) {
     for (int i = 0; i < N; ++i) {
         float expected = std::exp(input[i]);
         float rel_error = std::abs(result[i] - expected) / (std::abs(expected) + 1e-10f);
-        // Fast polynomial approximation: up to 12% relative error at extremes is acceptable
-        EXPECT_LT(rel_error, 0.12f) << "at x = " << input[i]
+        // Base-2 range reduction + 6th-order minimax polynomial: ~1e-6 rel error.
+        EXPECT_LT(rel_error, 1e-4f) << "at x = " << input[i]
                                     << ", expected = " << expected
                                     << ", got = " << result[i];
     }
@@ -41,9 +41,8 @@ TEST(NeonTranscendentalsTest, ExpBoundary) {
     optmath::neon::neon_fast_exp_f32(result.data(), input.data(), input.size());
 
     EXPECT_NEAR(result[0], 1.0f, 1e-4f);  // exp(0) = 1
-    // Fast approximation has higher error for non-zero inputs
-    EXPECT_NEAR(result[1], std::exp(1.0f), 0.3f);  // exp(1) ~= 2.72
-    EXPECT_NEAR(result[2], std::exp(-1.0f), 0.1f); // exp(-1) ~= 0.37
+    EXPECT_NEAR(result[1], std::exp(1.0f), 1e-3f);  // exp(1) ~= 2.72
+    EXPECT_NEAR(result[2], std::exp(-1.0f), 1e-4f); // exp(-1) ~= 0.37
     EXPECT_GT(result[3], 0.0f);  // exp(88) should be large but finite
     EXPECT_GE(result[4], 0.0f);  // exp(-88) may underflow to 0 in fast approximation
     EXPECT_GT(result[5], 0.0f);  // exp(100) clamped to exp(88)
@@ -133,8 +132,8 @@ TEST(NeonTranscendentalsTest, SigmoidFast) {
 
     for (int i = 0; i < N; ++i) {
         float expected = 1.0f / (1.0f + std::exp(-input[i]));
-        // Fast approximation chains exp, so tolerance must be relaxed significantly
-        EXPECT_NEAR(result[i], expected, 3e-2f) << "at x = " << input[i];
+        // Chains the (now accurate) fast exp; ~1e-6 error.
+        EXPECT_NEAR(result[i], expected, 1e-4f) << "at x = " << input[i];
     }
 }
 
@@ -172,8 +171,8 @@ TEST(NeonTranscendentalsTest, TanhFast) {
 
     for (int i = 0; i < N; ++i) {
         float expected = std::tanh(input[i]);
-        // Fast approximation uses 2*sigmoid(2x)-1, errors compound from exp approximation
-        EXPECT_NEAR(result[i], expected, 6e-2f) << "at x = " << input[i];
+        // 2*sigmoid(2x)-1 with the now-accurate fast exp; ~1e-5 error.
+        EXPECT_NEAR(result[i], expected, 1e-4f) << "at x = " << input[i];
     }
 }
 

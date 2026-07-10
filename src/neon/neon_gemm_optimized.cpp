@@ -15,7 +15,7 @@
  *
  * 8x8 Microkernel:
  *   micro_kernel_8x8 uses column-oriented accumulators for efficient
- *   column-major store. Rank-1 updates via vmlaq_laneq_f32 (FMA with
+ *   column-major store. Rank-1 updates via vfmaq_laneq_f32 (FMA with
  *   scalar lane broadcast). 16 vector stores vs 64 scalar stores.
  *   MR = NR = 8.
  *
@@ -101,8 +101,19 @@ static void micro_kernel_8x8(
     float32x4_t c6_lo = vdupq_n_f32(0.0f), c6_hi = vdupq_n_f32(0.0f);
     float32x4_t c7_lo = vdupq_n_f32(0.0f), c7_hi = vdupq_n_f32(0.0f);
 
+    // Prefetch the 8 output columns for write; they are read-modify-written
+    // after the k-loop, so warming them now hides the load-add latency.
+    for (int j = 0; j < 8; ++j) {
+        __builtin_prefetch(C + j * ldc, 1 /*write*/, 3 /*high locality*/);
+    }
+
     // Main loop over k dimension
     for (size_t p = 0; p < k; ++p) {
+        // Prefetch packed A/B a few k-steps ahead to hide L1/L2 latency on the
+        // A76 (out-of-range prefetch is harmless — it never faults).
+        __builtin_prefetch(A_packed + (p + 8) * MR, 0, 3);
+        __builtin_prefetch(B_packed + (p + 8) * NR, 0, 3);
+
         // Load A column (8 elements: rows 0-7 of A at k-index p)
         float32x4_t a0 = vld1q_f32(A_packed + p * MR);
         float32x4_t a1 = vld1q_f32(A_packed + p * MR + 4);
@@ -113,23 +124,23 @@ static void micro_kernel_8x8(
 
         // Rank-1 update by columns: C[:,j] += A[:,p] * B[p,j]
         // Column 0-3 (elements from b0)
-        c0_lo = vmlaq_laneq_f32(c0_lo, a0, b0, 0);
-        c0_hi = vmlaq_laneq_f32(c0_hi, a1, b0, 0);
-        c1_lo = vmlaq_laneq_f32(c1_lo, a0, b0, 1);
-        c1_hi = vmlaq_laneq_f32(c1_hi, a1, b0, 1);
-        c2_lo = vmlaq_laneq_f32(c2_lo, a0, b0, 2);
-        c2_hi = vmlaq_laneq_f32(c2_hi, a1, b0, 2);
-        c3_lo = vmlaq_laneq_f32(c3_lo, a0, b0, 3);
-        c3_hi = vmlaq_laneq_f32(c3_hi, a1, b0, 3);
+        c0_lo = vfmaq_laneq_f32(c0_lo, a0, b0, 0);
+        c0_hi = vfmaq_laneq_f32(c0_hi, a1, b0, 0);
+        c1_lo = vfmaq_laneq_f32(c1_lo, a0, b0, 1);
+        c1_hi = vfmaq_laneq_f32(c1_hi, a1, b0, 1);
+        c2_lo = vfmaq_laneq_f32(c2_lo, a0, b0, 2);
+        c2_hi = vfmaq_laneq_f32(c2_hi, a1, b0, 2);
+        c3_lo = vfmaq_laneq_f32(c3_lo, a0, b0, 3);
+        c3_hi = vfmaq_laneq_f32(c3_hi, a1, b0, 3);
         // Column 4-7 (elements from b1)
-        c4_lo = vmlaq_laneq_f32(c4_lo, a0, b1, 0);
-        c4_hi = vmlaq_laneq_f32(c4_hi, a1, b1, 0);
-        c5_lo = vmlaq_laneq_f32(c5_lo, a0, b1, 1);
-        c5_hi = vmlaq_laneq_f32(c5_hi, a1, b1, 1);
-        c6_lo = vmlaq_laneq_f32(c6_lo, a0, b1, 2);
-        c6_hi = vmlaq_laneq_f32(c6_hi, a1, b1, 2);
-        c7_lo = vmlaq_laneq_f32(c7_lo, a0, b1, 3);
-        c7_hi = vmlaq_laneq_f32(c7_hi, a1, b1, 3);
+        c4_lo = vfmaq_laneq_f32(c4_lo, a0, b1, 0);
+        c4_hi = vfmaq_laneq_f32(c4_hi, a1, b1, 0);
+        c5_lo = vfmaq_laneq_f32(c5_lo, a0, b1, 1);
+        c5_hi = vfmaq_laneq_f32(c5_hi, a1, b1, 1);
+        c6_lo = vfmaq_laneq_f32(c6_lo, a0, b1, 2);
+        c6_hi = vfmaq_laneq_f32(c6_hi, a1, b1, 2);
+        c7_lo = vfmaq_laneq_f32(c7_lo, a0, b1, 3);
+        c7_hi = vfmaq_laneq_f32(c7_hi, a1, b1, 3);
     }
 
     // Store results with vector load+add+store (16 vector ops vs 64 scalar)

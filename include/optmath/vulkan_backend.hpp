@@ -42,6 +42,7 @@ namespace vulkan {
         // GPU detection flags
         bool isMaliGpu = false;
         bool isMaliG720 = false;
+        bool isBroadcomGpu = false;  // Broadcom VideoCore (Raspberry Pi)
 
     private:
         VulkanContext() = default;

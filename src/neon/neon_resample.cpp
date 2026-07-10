@@ -55,9 +55,13 @@ void neon_resample_init(PolyphaseResamplerState& state,
         }
     }
 
-    // Initialize delay line (double-sized for contiguous NEON access)
-    state.delay.resize(state.n_taps, 0.0f);
-    state.delay_pos = 0;
+    // Delay line as a double-length sliding buffer: the current n_taps-sample
+    // window is always contiguous (so neon_dot_f32 applies directly), and the
+    // buffer is compacted only once every n_taps samples instead of shifting
+    // every sample. delay_pos is the "end" index (one past the newest sample);
+    // the window is delay[delay_pos - n_taps .. delay_pos - 1].
+    state.delay.assign(2 * state.n_taps, 0.0f);
+    state.delay_pos = state.n_taps;
 }
 
 std::size_t neon_resample_f32(float* out, const float* in, std::size_t input_len,
@@ -68,19 +72,24 @@ std::size_t neon_resample_f32(float* out, const float* in, std::size_t input_len
     const std::size_t n_taps = state.n_taps;
 
     for (std::size_t i = 0; i < input_len; ++i) {
-        // Push input sample into delay line (shift left, new sample at end)
-        // This keeps the delay line in order: oldest at [0], newest at [n_taps-1]
-        if (n_taps > 1) {
-            std::memmove(state.delay.data(), state.delay.data() + 1,
-                         (n_taps - 1) * sizeof(float));
+        // Push input sample. The window keeps oldest at [0], newest at [n_taps-1].
+        // When the buffer is full, slide the live window back to the front — an
+        // O(n_taps) memmove amortized over n_taps pushes, i.e. O(1) per sample.
+        if (state.delay_pos == state.delay.size()) {
+            std::memmove(state.delay.data(),
+                         state.delay.data() + (state.delay_pos - n_taps),
+                         n_taps * sizeof(float));
+            state.delay_pos = n_taps;
         }
-        state.delay[n_taps - 1] = in[i];
+        state.delay[state.delay_pos] = in[i];
+        state.delay_pos++;
+        const float* window = state.delay.data() + (state.delay_pos - n_taps);
 
         // Produce output samples while phase accumulator is within range
         while (state.phase_acc < L) {
-            // y = dot(reversed_phase[phase_acc], delay_line, n_taps)
+            // y = dot(reversed_phase[phase_acc], delay_window, n_taps)
             out[n_out++] = neon_dot_f32(state.phases[state.phase_acc].data(),
-                                         state.delay.data(), n_taps);
+                                         window, n_taps);
             state.phase_acc += M;
         }
         state.phase_acc -= L;

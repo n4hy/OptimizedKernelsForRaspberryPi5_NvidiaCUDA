@@ -229,12 +229,19 @@ void xcorr_f32(float* out, const float* x, std::size_t nx,
         const float* yp = y + y_offset;
 
         std::size_t i = 0;
-        float32x4_t vsum = vdupq_n_f32(0.0f);
+        // 4 independent accumulators + 16-wide unroll for A76 dual-FMA pipes.
+        float32x4_t vsum0 = vdupq_n_f32(0.0f), vsum1 = vdupq_n_f32(0.0f);
+        float32x4_t vsum2 = vdupq_n_f32(0.0f), vsum3 = vdupq_n_f32(0.0f);
 
+        for (; i + 15 < len; i += 16) {
+            vsum0 = vfmaq_f32(vsum0, vld1q_f32(xp + i),      vld1q_f32(yp + i));
+            vsum1 = vfmaq_f32(vsum1, vld1q_f32(xp + i + 4),  vld1q_f32(yp + i + 4));
+            vsum2 = vfmaq_f32(vsum2, vld1q_f32(xp + i + 8),  vld1q_f32(yp + i + 8));
+            vsum3 = vfmaq_f32(vsum3, vld1q_f32(xp + i + 12), vld1q_f32(yp + i + 12));
+        }
+        float32x4_t vsum = vaddq_f32(vaddq_f32(vsum0, vsum1), vaddq_f32(vsum2, vsum3));
         for (; i + 3 < len; i += 4) {
-            float32x4_t vx = vld1q_f32(xp + i);
-            float32x4_t vy = vld1q_f32(yp + i);
-            vsum = vmlaq_f32(vsum, vx, vy);
+            vsum = vfmaq_f32(vsum, vld1q_f32(xp + i), vld1q_f32(yp + i));
         }
         sum = vaddvq_f32(vsum);
         for (; i < len; ++i) {
@@ -275,25 +282,35 @@ void xcorr_complex_f32(float* out_re, float* out_im,
         const float* yrp = y_re + y_offset;
         const float* yip = y_im + y_offset;
 
-        float32x4_t vsumr = vdupq_n_f32(0.0f);
-        float32x4_t vsumi = vdupq_n_f32(0.0f);
+        // Dual accumulators per channel + 8-wide unroll for A76 dual-FMA pipes.
+        float32x4_t vsumr0 = vdupq_n_f32(0.0f), vsumr1 = vdupq_n_f32(0.0f);
+        float32x4_t vsumi0 = vdupq_n_f32(0.0f), vsumi1 = vdupq_n_f32(0.0f);
 
         std::size_t i = 0;
+        for (; i + 7 < len; i += 8) {
+            float32x4_t xr0 = vld1q_f32(xrp + i),     xr1 = vld1q_f32(xrp + i + 4);
+            float32x4_t xi0 = vld1q_f32(xip + i),     xi1 = vld1q_f32(xip + i + 4);
+            float32x4_t yr0 = vld1q_f32(yrp + i),     yr1 = vld1q_f32(yrp + i + 4);
+            float32x4_t yi0 = vld1q_f32(yip + i),     yi1 = vld1q_f32(yip + i + 4);
+
+            // x * conj(y) = (xr*yr + xi*yi) + j*(xi*yr - xr*yi)
+            vsumr0 = vfmaq_f32(vsumr0, xr0, yr0);  vsumr1 = vfmaq_f32(vsumr1, xr1, yr1);
+            vsumr0 = vfmaq_f32(vsumr0, xi0, yi0);  vsumr1 = vfmaq_f32(vsumr1, xi1, yi1);
+            vsumi0 = vfmaq_f32(vsumi0, xi0, yr0);  vsumi1 = vfmaq_f32(vsumi1, xi1, yr1);
+            vsumi0 = vfmsq_f32(vsumi0, xr0, yi0);  vsumi1 = vfmsq_f32(vsumi1, xr1, yi1);
+        }
         for (; i + 3 < len; i += 4) {
             float32x4_t xr = vld1q_f32(xrp + i);
             float32x4_t xi = vld1q_f32(xip + i);
             float32x4_t yr = vld1q_f32(yrp + i);
             float32x4_t yi = vld1q_f32(yip + i);
-
-            // x * conj(y) = (xr + j*xi) * (yr - j*yi)
-            // = (xr*yr + xi*yi) + j*(xi*yr - xr*yi)
-            vsumr = vmlaq_f32(vsumr, xr, yr);
-            vsumr = vmlaq_f32(vsumr, xi, yi);
-            vsumi = vmlaq_f32(vsumi, xi, yr);
-            vsumi = vmlsq_f32(vsumi, xr, yi);
+            vsumr0 = vfmaq_f32(vsumr0, xr, yr);
+            vsumr0 = vfmaq_f32(vsumr0, xi, yi);
+            vsumi0 = vfmaq_f32(vsumi0, xi, yr);
+            vsumi0 = vfmsq_f32(vsumi0, xr, yi);
         }
-        sum_re = vaddvq_f32(vsumr);
-        sum_im = vaddvq_f32(vsumi);
+        sum_re = vaddvq_f32(vaddq_f32(vsumr0, vsumr1));
+        sum_im = vaddvq_f32(vaddq_f32(vsumi0, vsumi1));
 
         for (; i < len; ++i) {
             sum_re += xrp[i] * yrp[i] + xip[i] * yip[i];
@@ -389,24 +406,39 @@ void caf_f32(float* out_mag,
             std::size_t max_i = n_samples - r;
 
 #ifdef OPTMATH_USE_NEON
-            float32x4_t vsumr = vdupq_n_f32(0.0f);
-            float32x4_t vsumi = vdupq_n_f32(0.0f);
+            // Two independent accumulators per channel + 8-wide unroll break the
+            // loop-carried FMA dependency so the A76's two FP pipes stay busy.
+            // Fused vfmaq/vfmsq guarantee single-rounding multiply-accumulate.
+            const float* sre = shifted_re.data();
+            const float* sim = shifted_im.data();
+            float32x4_t vsumr0 = vdupq_n_f32(0.0f), vsumr1 = vdupq_n_f32(0.0f);
+            float32x4_t vsumi0 = vdupq_n_f32(0.0f), vsumi1 = vdupq_n_f32(0.0f);
             std::size_t i = 0;
 
-            for (; i + 3 < max_i; i += 4) {
-                float32x4_t sr = vld1q_f32(shifted_re.data() + i);
-                float32x4_t si = vld1q_f32(shifted_im.data() + i);
-                float32x4_t vr = vld1q_f32(surv_re + i + r);
-                float32x4_t vi = vld1q_f32(surv_im + i + r);
+            for (; i + 7 < max_i; i += 8) {
+                float32x4_t sr0 = vld1q_f32(sre + i),         sr1 = vld1q_f32(sre + i + 4);
+                float32x4_t si0 = vld1q_f32(sim + i),         si1 = vld1q_f32(sim + i + 4);
+                float32x4_t vr0 = vld1q_f32(surv_re + i + r), vr1 = vld1q_f32(surv_re + i + r + 4);
+                float32x4_t vi0 = vld1q_f32(surv_im + i + r), vi1 = vld1q_f32(surv_im + i + r + 4);
 
                 // shifted * conj(surv)
-                vsumr = vmlaq_f32(vsumr, sr, vr);
-                vsumr = vmlaq_f32(vsumr, si, vi);
-                vsumi = vmlaq_f32(vsumi, si, vr);
-                vsumi = vmlsq_f32(vsumi, sr, vi);
+                vsumr0 = vfmaq_f32(vsumr0, sr0, vr0);  vsumr1 = vfmaq_f32(vsumr1, sr1, vr1);
+                vsumr0 = vfmaq_f32(vsumr0, si0, vi0);  vsumr1 = vfmaq_f32(vsumr1, si1, vi1);
+                vsumi0 = vfmaq_f32(vsumi0, si0, vr0);  vsumi1 = vfmaq_f32(vsumi1, si1, vr1);
+                vsumi0 = vfmsq_f32(vsumi0, sr0, vi0);  vsumi1 = vfmsq_f32(vsumi1, sr1, vi1);
             }
-            corr_re = vaddvq_f32(vsumr);
-            corr_im = vaddvq_f32(vsumi);
+            for (; i + 3 < max_i; i += 4) {
+                float32x4_t sr = vld1q_f32(sre + i);
+                float32x4_t si = vld1q_f32(sim + i);
+                float32x4_t vr = vld1q_f32(surv_re + i + r);
+                float32x4_t vi = vld1q_f32(surv_im + i + r);
+                vsumr0 = vfmaq_f32(vsumr0, sr, vr);
+                vsumr0 = vfmaq_f32(vsumr0, si, vi);
+                vsumi0 = vfmaq_f32(vsumi0, si, vr);
+                vsumi0 = vfmsq_f32(vsumi0, sr, vi);
+            }
+            corr_re = vaddvq_f32(vaddq_f32(vsumr0, vsumr1));
+            corr_im = vaddvq_f32(vaddq_f32(vsumi0, vsumi1));
 
             for (; i < max_i; ++i) {
                 corr_re += shifted_re[i] * surv_re[i + r] + shifted_im[i] * surv_im[i + r];
@@ -708,25 +740,9 @@ void projection_clutter_f32(float* output,
     std::vector<float> coeff(subspace_dim, 0.0f);
 
     for (std::size_t d = 0; d < subspace_dim; ++d) {
-        float dot = 0.0f;
+        // Reuse the optimized 4-accumulator dot kernel.
         const float* u = clutter_subspace + d * n;
-
-#ifdef OPTMATH_USE_NEON
-        float32x4_t vsum = vdupq_n_f32(0.0f);
-        std::size_t i = 0;
-        for (; i + 3 < n; i += 4) {
-            vsum = vmlaq_f32(vsum, vld1q_f32(u + i), vld1q_f32(input + i));
-        }
-        dot = vaddvq_f32(vsum);
-        for (; i < n; ++i) {
-            dot += u[i] * input[i];
-        }
-#else
-        for (std::size_t i = 0; i < n; ++i) {
-            dot += u[i] * input[i];
-        }
-#endif
-        coeff[d] = dot;
+        coeff[d] = neon::neon_dot_f32(u, input, n);
     }
 
     // output = input - sum(coeff[d] * U[d])

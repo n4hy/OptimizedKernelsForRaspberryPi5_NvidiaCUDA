@@ -67,11 +67,15 @@ static void neon_axpy_f32(float* y, const float* x, float alpha, std::size_t n) 
 #ifdef OPTMATH_USE_NEON
     float32x4_t valpha = vdupq_n_f32(alpha);
     std::size_t i = 0;
+    // 4-wide unroll (16 floats/iter) to keep the A76 load/store + FMA pipes fed.
+    for (; i + 15 < n; i += 16) {
+        vst1q_f32(y + i,      vfmaq_f32(vld1q_f32(y + i),      vld1q_f32(x + i),      valpha));
+        vst1q_f32(y + i + 4,  vfmaq_f32(vld1q_f32(y + i + 4),  vld1q_f32(x + i + 4),  valpha));
+        vst1q_f32(y + i + 8,  vfmaq_f32(vld1q_f32(y + i + 8),  vld1q_f32(x + i + 8),  valpha));
+        vst1q_f32(y + i + 12, vfmaq_f32(vld1q_f32(y + i + 12), vld1q_f32(x + i + 12), valpha));
+    }
     for (; i + 3 < n; i += 4) {
-        float32x4_t vy = vld1q_f32(y + i);
-        float32x4_t vx = vld1q_f32(x + i);
-        vy = vmlaq_f32(vy, vx, valpha);
-        vst1q_f32(y + i, vy);
+        vst1q_f32(y + i, vfmaq_f32(vld1q_f32(y + i), vld1q_f32(x + i), valpha));
     }
     for (; i < n; ++i) {
         y[i] += alpha * x[i];

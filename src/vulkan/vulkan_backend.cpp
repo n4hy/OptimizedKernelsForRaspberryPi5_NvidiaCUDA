@@ -62,9 +62,10 @@
  * ---------------------------------------------------------------------------
  * 7. Matrix Operations
  * ---------------------------------------------------------------------------
- *    Elementwise add/sub/scale/hadamard, vulkan_mat_mul (32x32 shared-memory
- *    tiled GEMM), vulkan_mat_transpose (tiled transpose), mat-vec product and
- *    outer product. Eigen matrices are column-major; shaders index accordingly.
+ *    Elementwise add/sub/scale/hadamard, vulkan_mat_mul (16x16 shared-memory
+ *    tiled GEMM on the default/VideoCore path, 32x32 on Mali-G720),
+ *    vulkan_mat_transpose, mat-vec product and outer product. Eigen matrices
+ *    are column-major; shaders index accordingly.
  *
  * ---------------------------------------------------------------------------
  * 8. DSP Kernels
@@ -390,11 +391,20 @@ bool VulkanContext::init() {
     isMaliG720 = isMaliGpu && (gpuName.find("Mali-G720") != std::string::npos ||
                                 gpuName.find("G720") != std::string::npos);
 
+    // Broadcom VideoCore VII (Raspberry Pi 5) detection (vendor ID 0x14E4).
+    // Exposed via the Mesa v3dv driver: subgroup width 16,
+    // maxComputeWorkGroupInvocations = 256 (so the 1024-invocation Mali
+    // variants must NOT be selected here). Uses the default tiled kernels.
+    isBroadcomGpu = (devProps.vendorID == 0x14E4);
+
     if (isMaliGpu) {
         std::cerr << "[Vulkan] Mali GPU detected: " << gpuName << "\n";
         if (isMaliG720) {
             std::cerr << "[Vulkan] Mali-G720 Immortalis optimizations enabled\n";
         }
+    } else if (isBroadcomGpu) {
+        std::cerr << "[Vulkan] Broadcom VideoCore GPU detected: " << gpuName
+                  << " (tiled compute kernels enabled)\n";
     }
 
     initialized = true;
@@ -476,8 +486,15 @@ static void cleanupPipelineCache(VkDevice device) {
 static PipelineState getOrCreatePipeline(const std::string& shaderName, size_t bufferCount, size_t pushConstSize) {
     std::lock_guard<std::mutex> lock(g_pipelineCacheMutex);
 
-    if (g_pipelineCache.count(shaderName)) {
-        return g_pipelineCache[shaderName];
+    // Key on shader name + descriptor-set layout shape (buffer count) + push
+    // constant size: the pipeline layout depends on all three, so caching by
+    // name alone would return a layout-mismatched pipeline if a shader were ever
+    // dispatched with a different binding count / push size.
+    const std::string cacheKey = shaderName + "#" + std::to_string(bufferCount)
+                                            + "#" + std::to_string(pushConstSize);
+
+    if (g_pipelineCache.count(cacheKey)) {
+        return g_pipelineCache[cacheKey];
     }
 
     VulkanContext& ctx = VulkanContext::get();
@@ -565,7 +582,7 @@ static PipelineState getOrCreatePipeline(const std::string& shaderName, size_t b
     }
 
     PipelineState state = {computePipeline, pipelineLayout, descriptorSetLayout, shaderModule};
-    g_pipelineCache[shaderName] = state;
+    g_pipelineCache[cacheKey] = state;
     return state;
 }
 
@@ -612,6 +629,28 @@ static void run_compute(const std::string& shaderName,
 
     VulkanContext& ctx = VulkanContext::get();
     VkDevice device = ctx.device;
+
+    // Validate dispatch dimensions against the device's per-dimension work-group
+    // limit. v3dv (Pi 5 VideoCore VII) caps maxComputeWorkGroupCount well below
+    // 2^31; exceeding it makes vkCmdDispatch silently drop the tail of the grid
+    // (elements never computed). Cache the limit once — it is device-constant.
+    static const VkExtent3D maxGroups = [&]() -> VkExtent3D {
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(ctx.physicalDevice, &props);
+        return { props.limits.maxComputeWorkGroupCount[0],
+                 props.limits.maxComputeWorkGroupCount[1],
+                 props.limits.maxComputeWorkGroupCount[2] };
+    }();
+    if (groupCountX > maxGroups.width ||
+        groupCountY > maxGroups.height ||
+        groupCountZ > maxGroups.depth) {
+        std::cerr << "[Vulkan] Dispatch for '" << shaderName << "' requests ("
+                  << groupCountX << "," << groupCountY << "," << groupCountZ
+                  << ") work groups, exceeding device limit ("
+                  << maxGroups.width << "," << maxGroups.height << ","
+                  << maxGroups.depth << "). Input too large for this backend.\n";
+        throw std::runtime_error("compute dispatch exceeds maxComputeWorkGroupCount");
+    }
 
     // Get Cached Pipeline
     PipelineState state = getOrCreatePipeline(shaderName, buffers.size(), pushConstSize);
@@ -701,14 +740,15 @@ static void run_compute(const std::string& shaderName,
     }
     vkCmdDispatch(commandBuffer, groupCountX, groupCountY, groupCountZ);
 
-    // Pipeline barrier to ensure compute shader writes complete before submission ends.
-    // Host visibility is guaranteed by HOST_COHERENT_BIT on buffers + vkQueueWaitIdle below.
+    // Barrier making the compute-shader writes visible to the HOST readback that
+    // follows (results are read via mapped memory after vkQueueWaitIdle). The
+    // correct destination is the host stage / HOST_READ, not another shader read.
     VkMemoryBarrier memBarrier{};
     memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    memBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    memBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
     vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_HOST_BIT,
                          0, 1, &memBarrier, 0, nullptr, 0, nullptr);
 
     result = vkEndCommandBuffer(commandBuffer);
@@ -869,47 +909,16 @@ float vulkan_vec_dot(const Eigen::VectorXf& a, const Eigen::VectorXf& b) {
 
 float vulkan_vec_norm(const Eigen::VectorXf& a) {
     if (!is_available() || a.size() == 0) return 0.0f;
-
-    size_t count = a.size();
-    size_t sizeBytes = count * sizeof(float);
-
-    // Using vec_norm compute shader which squares elements
-    BufferWrapper bufA(sizeBytes);
-    // bufOut size depends on how vec_norm is implemented.
-    // If it's element-wise square, we need sizeBytes.
-    // If it's reduction, we need less.
-    // I implemented vec_norm.comp.glsl as element-wise square: dataOut[idx] = v*v.
-
-    // Wait, if I want to reuse vec_dot logic (partial sums), vec_norm should probably output partial sums of squares.
-    // But my current vec_norm.comp.glsl outputs N squares.
-    // This is inefficient (memory BW).
-    // Ideally I should modify vec_norm.comp.glsl to do partial sums like vec_dot.
-    // Or just use vec_dot(a, a).
-    // Using vec_dot(a, a) is cleaner code but user asked for vec_norm.comp.
-    // I will use vec_norm.comp as is (element wise square) and then sum on CPU.
-    // This is slower than vec_dot.
-    // But to make it work now:
-
-    BufferWrapper bufOut(sizeBytes);
-
-    bufA.mapAndCopyFrom(a.data());
-
-    struct { uint32_t count; } push = { (uint32_t)count };
-    uint32_t groupCount = (uint32_t)((count + 255) / 256);
-    run_compute("vec_norm.comp.spv", {&bufA, &bufOut}, &push, sizeof(push), groupCount);
-
-    std::vector<float> squares(count);
-    bufOut.mapAndCopyTo(squares.data());
-
-    float sum = 0.0f;
-    for (float v : squares) sum += v;
-    return std::sqrt(sum);
+    // ||a|| = sqrt(a . a). Reuse the reduction-based dot kernel instead of
+    // writing N squares to global memory and summing them on the CPU (the old
+    // path was memory-bandwidth bound and slower than a single dot).
+    return std::sqrt(vulkan_vec_dot(a, a));
 }
 
 // --- Matrix Operations ---
 
 Eigen::MatrixXf vulkan_mat_add(const Eigen::MatrixXf& a, const Eigen::MatrixXf& b) {
-    if (!is_available() || a.rows() != b.rows() || a.cols() != b.cols()) return Eigen::MatrixXf();
+    if (!is_available() || a.size() == 0 || a.rows() != b.rows() || a.cols() != b.cols()) return Eigen::MatrixXf();
 
     size_t rows = a.rows();
     size_t cols = a.cols();
@@ -937,7 +946,7 @@ Eigen::MatrixXf vulkan_mat_add(const Eigen::MatrixXf& a, const Eigen::MatrixXf& 
 }
 
 Eigen::MatrixXf vulkan_mat_sub(const Eigen::MatrixXf& a, const Eigen::MatrixXf& b) {
-    if (!is_available() || a.rows() != b.rows() || a.cols() != b.cols()) return Eigen::MatrixXf();
+    if (!is_available() || a.size() == 0 || a.rows() != b.rows() || a.cols() != b.cols()) return Eigen::MatrixXf();
 
     size_t rows = a.rows();
     size_t cols = a.cols();
@@ -964,7 +973,7 @@ Eigen::MatrixXf vulkan_mat_sub(const Eigen::MatrixXf& a, const Eigen::MatrixXf& 
 }
 
 Eigen::MatrixXf vulkan_mat_mul(const Eigen::MatrixXf& a, const Eigen::MatrixXf& b) {
-    if (!is_available() || a.cols() != b.rows()) return Eigen::MatrixXf();
+    if (!is_available() || a.size() == 0 || b.size() == 0 || a.cols() != b.rows()) return Eigen::MatrixXf();
 
     // A: MxK, B: KxN -> C: MxN
     size_t M = a.rows();
@@ -992,10 +1001,12 @@ Eigen::MatrixXf vulkan_mat_mul(const Eigen::MatrixXf& a, const Eigen::MatrixXf& 
         uint32_t gy = (uint32_t)((N + 31) / 32);
         run_compute("mat_mul_tiled_mali.comp.spv", {&bufA, &bufB, &bufOut}, &push, sizeof(push), gx, gy);
     } else {
-        // Default: 16x16 tiles
+        // Default (incl. Pi 5 VideoCore VII): 16x16 shared-memory tiled GEMM.
+        // Same bindings/push-constants/dispatch as the naive kernel, but reads
+        // each tile from shared memory instead of re-reading global memory per k.
         uint32_t gx = (uint32_t)((M + 15) / 16);
         uint32_t gy = (uint32_t)((N + 15) / 16);
-        run_compute("mat_mul.comp.spv", {&bufA, &bufB, &bufOut}, &push, sizeof(push), gx, gy);
+        run_compute("mat_mul_tiled.comp.spv", {&bufA, &bufB, &bufOut}, &push, sizeof(push), gx, gy);
     }
 
     Eigen::MatrixXf res(M, N);
@@ -1004,7 +1015,7 @@ Eigen::MatrixXf vulkan_mat_mul(const Eigen::MatrixXf& a, const Eigen::MatrixXf& 
 }
 
 Eigen::MatrixXf vulkan_mat_transpose(const Eigen::MatrixXf& a) {
-    if (!is_available()) return Eigen::MatrixXf();
+    if (!is_available() || a.size() == 0) return Eigen::MatrixXf();
 
     size_t rows = a.rows();
     size_t cols = a.cols();
@@ -1030,7 +1041,7 @@ Eigen::MatrixXf vulkan_mat_transpose(const Eigen::MatrixXf& a) {
 }
 
 Eigen::MatrixXf vulkan_mat_scale(const Eigen::MatrixXf& a, float scalar) {
-    if (!is_available()) return Eigen::MatrixXf();
+    if (!is_available() || a.size() == 0) return Eigen::MatrixXf();
 
     size_t rows = a.rows();
     size_t cols = a.cols();
@@ -1055,7 +1066,7 @@ Eigen::MatrixXf vulkan_mat_scale(const Eigen::MatrixXf& a, float scalar) {
 }
 
 Eigen::VectorXf vulkan_mat_vec_mul(const Eigen::MatrixXf& a, const Eigen::VectorXf& v) {
-    if (!is_available() || a.cols() != v.size()) return Eigen::VectorXf();
+    if (!is_available() || a.size() == 0 || v.size() == 0 || a.cols() != v.size()) return Eigen::VectorXf();
 
     size_t rows = a.rows();
     size_t cols = a.cols();
@@ -1082,7 +1093,7 @@ Eigen::VectorXf vulkan_mat_vec_mul(const Eigen::MatrixXf& a, const Eigen::Vector
 }
 
 Eigen::MatrixXf vulkan_mat_outer_product(const Eigen::VectorXf& u, const Eigen::VectorXf& v) {
-    if (!is_available()) return Eigen::MatrixXf();
+    if (!is_available() || u.size() == 0 || v.size() == 0) return Eigen::MatrixXf();
 
     size_t M = u.size(); // Rows
     size_t N = v.size(); // Cols
@@ -1110,7 +1121,7 @@ Eigen::MatrixXf vulkan_mat_outer_product(const Eigen::VectorXf& u, const Eigen::
 }
 
 Eigen::MatrixXf vulkan_mat_elementwise_mul(const Eigen::MatrixXf& a, const Eigen::MatrixXf& b) {
-    if (!is_available() || a.rows() != b.rows() || a.cols() != b.cols()) return Eigen::MatrixXf();
+    if (!is_available() || a.size() == 0 || a.rows() != b.rows() || a.cols() != b.cols()) return Eigen::MatrixXf();
 
     size_t rows = a.rows();
     size_t cols = a.cols();
@@ -1137,7 +1148,7 @@ Eigen::MatrixXf vulkan_mat_elementwise_mul(const Eigen::MatrixXf& a, const Eigen
 }
 
 Eigen::VectorXf vulkan_convolution_1d(const Eigen::VectorXf& x, const Eigen::VectorXf& k) {
-    if (!is_available() || x.size() < k.size()) return Eigen::VectorXf();
+    if (!is_available() || k.size() == 0 || x.size() < k.size()) return Eigen::VectorXf();
 
     size_t n_x = x.size();
     size_t n_k = k.size();
@@ -1160,7 +1171,7 @@ Eigen::VectorXf vulkan_convolution_1d(const Eigen::VectorXf& x, const Eigen::Vec
 }
 
 Eigen::MatrixXf vulkan_convolution_2d(const Eigen::MatrixXf& x, const Eigen::MatrixXf& k) {
-    if (!is_available() || x.rows() < k.rows() || x.cols() < k.cols()) return Eigen::MatrixXf();
+    if (!is_available() || k.size() == 0 || x.rows() < k.rows() || x.cols() < k.cols()) return Eigen::MatrixXf();
 
     size_t H_in = x.rows();
     size_t W_in = x.cols();
@@ -1196,7 +1207,7 @@ Eigen::MatrixXf vulkan_convolution_2d(const Eigen::MatrixXf& x, const Eigen::Mat
 }
 
 Eigen::VectorXf vulkan_correlation_1d(const Eigen::VectorXf& x, const Eigen::VectorXf& k) {
-    if (!is_available() || x.size() < k.size()) return Eigen::VectorXf();
+    if (!is_available() || k.size() == 0 || x.size() < k.size()) return Eigen::VectorXf();
 
     size_t n_x = x.size();
     size_t n_k = k.size();
@@ -1218,7 +1229,7 @@ Eigen::VectorXf vulkan_correlation_1d(const Eigen::VectorXf& x, const Eigen::Vec
 }
 
 Eigen::MatrixXf vulkan_correlation_2d(const Eigen::MatrixXf& x, const Eigen::MatrixXf& k) {
-    if (!is_available() || x.rows() < k.rows() || x.cols() < k.cols()) return Eigen::MatrixXf();
+    if (!is_available() || k.size() == 0 || x.rows() < k.rows() || x.cols() < k.cols()) return Eigen::MatrixXf();
 
     size_t H_in = x.rows();
     size_t W_in = x.cols();
@@ -1396,50 +1407,12 @@ void vulkan_fft_radix2(Eigen::VectorXf& data, bool inverse) {
 }
 
 void vulkan_fft_radix4(Eigen::VectorXf& data, bool inverse) {
-    if (!is_available() || data.size() == 0 || (data.size() % 2 != 0)) return;
-
-    size_t N = data.size() / 2;
-    // N must be power of 4
-    uint32_t log2N = 0;
-    for (size_t tmp = N; tmp > 1; tmp >>= 1) log2N++;
-    if ((N & (N - 1)) != 0 || log2N % 2 != 0) {
-        std::cerr << "[Vulkan] FFT Radix-4 requires size power of 4\n";
-        return;
-    }
-
-    // Usually digit reversal for radix-4. For simplicity, we assume user provided compatible input or fallback.
-    // Radix-4 is tricky without proper digit reversal.
-    // For this implementation, I will just call bit_reverse_copy which is correct for Radix-2 based Cooley-Tukey.
-    // For pure Radix-4, digit reversal is base-4.
-    // But since the task is just to "add the shader", I will wire it up.
-    // The shader `fft_radix4.comp.glsl` logic I wrote looks like DIT (Decimation In Time) or DIF.
-    // If it's DIT, it needs bit/digit-reversed input.
-
-    // Fallback: Just use Radix-2 wrapper logic if shader expects bit-reversed.
-    // But radix-4 shader walks 0, 1, 2, 3 strides.
-
-    Eigen::VectorXf reversed(data.size());
-    bit_reverse_copy(data, reversed); // Warning: Base-2 reversal might not be enough for Base-4 if not carefully mapped.
-
-    size_t sizeBytes = data.size() * sizeof(float);
-    BufferWrapper buf(sizeBytes);
-    buf.mapAndCopyFrom(reversed.data());
-
-    uint32_t stages = log2N / 2; // log4(N) = log2(N)/2
-    std::string shader = inverse ? "ifft_radix4.comp.spv" : "fft_radix4.comp.spv";
-
-    for (uint32_t s = 0; s < stages; ++s) {
-        struct { uint32_t n; uint32_t stage; uint32_t invert; } push = {
-            (uint32_t)N, s, (uint32_t)(inverse ? 1 : 0)
-        };
-        // N/4 butterflies
-        uint32_t groupCount = (uint32_t)((N/4 + 255) / 256);
-        run_compute(shader, {&buf}, &push, sizeof(push), groupCount);
-    }
-
-    buf.mapAndCopyTo(data.data());
-
-    // Note: follows FFTW/cuFFT convention — caller is responsible for 1/N normalization on IFFT
+    // The radix-4 GPU path requires base-4 digit reversal to permute its input,
+    // but only base-2 bit reversal is implemented, which produces numerically
+    // incorrect results. Until the base-4 permutation (and shader) are validated
+    // against a golden FFT, delegate to the verified radix-2 Cooley-Tukey path,
+    // which is correct for any power-of-2 size (including all powers of 4).
+    vulkan_fft_radix2(data, inverse);
 }
 
 #else

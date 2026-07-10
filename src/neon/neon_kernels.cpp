@@ -16,7 +16,7 @@
  *   unrolled accumulation for reduced loop overhead.
  *
  * Matrix Operations:
- *   4x4 GEMM microkernel using vmlaq_n_f32 for rank-1 updates. Tiled
+ *   4x4 GEMM microkernel using vfmaq_n_f32 for rank-1 updates. Tiled
  *   GEMM with block partitioning. Includes mat_scale, mat_transpose,
  *   and mat_vec_mul.
  *
@@ -28,16 +28,16 @@
  *   for backward compatibility.
  *
  * Vectorized Transcendentals (6th-order Minimax Polynomials):
- *   neon_fast_exp_f32 - Range reduction x=k*ln2+f with integer exponent
- *     reconstruction via bit manipulation (vcvtq_s32_f32, vshlq_n_s32,
- *     vreinterpretq_f32_s32) and 6-coefficient Horner polynomial.
- *     Accuracy ~12%.
+ *   neon_fast_exp_f32 - Base-2 range reduction (f = x*log2e - round(x*log2e))
+ *     with integer exponent reconstruction via bit manipulation
+ *     (vcvtq_s32_f32, vshlq_n_s32, vreinterpretq_f32_s32) and a 6-coefficient
+ *     Horner polynomial for 2^f. Accuracy ~1e-6.
  *   neon_fast_sin_f32 - Pi-based range reduction with 5-coefficient
  *     Chebyshev polynomial and sign correction via vbslq_f32.
  *   neon_fast_cos_f32 - Computed as sin(x + pi/2).
  *   neon_fast_sigmoid_f32 - 1/(1+exp(-x)) with input clamping [-20, 20].
  *   neon_fast_tanh_f32 - 2*sigmoid(2x)-1 with clamping [-10, 10].
- *   Sin/cos accuracy ~1e-5, sigmoid accuracy ~3%.
+ *   Sin/cos accuracy ~1e-5, sigmoid/tanh accuracy ~1e-6.
  *
  * Eigen Wrappers:
  *   Complete set of wrappers accepting Eigen::VectorXf and Eigen::MatrixXf
@@ -81,19 +81,19 @@ float neon_dot_f32(const float* a, const float* b, std::size_t n) {
     for (; i + 15 < n; i += 16) {
         float32x4_t a0 = vld1q_f32(a + i);
         float32x4_t b0 = vld1q_f32(b + i);
-        vsum0 = vmlaq_f32(vsum0, a0, b0);
+        vsum0 = vfmaq_f32(vsum0, a0, b0);
 
         float32x4_t a1 = vld1q_f32(a + i + 4);
         float32x4_t b1 = vld1q_f32(b + i + 4);
-        vsum1 = vmlaq_f32(vsum1, a1, b1);
+        vsum1 = vfmaq_f32(vsum1, a1, b1);
 
         float32x4_t a2 = vld1q_f32(a + i + 8);
         float32x4_t b2 = vld1q_f32(b + i + 8);
-        vsum2 = vmlaq_f32(vsum2, a2, b2);
+        vsum2 = vfmaq_f32(vsum2, a2, b2);
 
         float32x4_t a3 = vld1q_f32(a + i + 12);
         float32x4_t b3 = vld1q_f32(b + i + 12);
-        vsum3 = vmlaq_f32(vsum3, a3, b3);
+        vsum3 = vfmaq_f32(vsum3, a3, b3);
     }
 
     // Combine accumulators
@@ -103,7 +103,7 @@ float neon_dot_f32(const float* a, const float* b, std::size_t n) {
     for (; i + 3 < n; i += 4) {
         float32x4_t va = vld1q_f32(a + i);
         float32x4_t vb = vld1q_f32(b + i);
-        vsum = vmlaq_f32(vsum, va, vb);
+        vsum = vfmaq_f32(vsum, va, vb);
     }
 
     float sum = vaddvq_f32(vsum);
@@ -122,25 +122,23 @@ float neon_dot_f32(const float* a, const float* b, std::size_t n) {
 
 double neon_dot_f64(const double* a, const double* b, std::size_t n) {
 #ifdef OPTMATH_USE_NEON
-    float64x2_t vsum = vdupq_n_f64(0.0);
+    // 4 independent accumulators (8 doubles/iter) break the loop-carried FMA
+    // dependency so both A76 FP pipes stay busy; fused vfmaq for single rounding.
+    float64x2_t vsum0 = vdupq_n_f64(0.0), vsum1 = vdupq_n_f64(0.0);
+    float64x2_t vsum2 = vdupq_n_f64(0.0), vsum3 = vdupq_n_f64(0.0);
     size_t i = 0;
 
-    for (; i + 3 < n; i += 4) {
-        float64x2_t a0 = vld1q_f64(a + i);
-        float64x2_t b0 = vld1q_f64(b + i);
-        vsum = vmlaq_f64(vsum, a0, b0);
-
-        float64x2_t a1 = vld1q_f64(a + i + 2);
-        float64x2_t b1 = vld1q_f64(b + i + 2);
-        vsum = vmlaq_f64(vsum, a1, b1);
+    for (; i + 7 < n; i += 8) {
+        vsum0 = vfmaq_f64(vsum0, vld1q_f64(a + i),     vld1q_f64(b + i));
+        vsum1 = vfmaq_f64(vsum1, vld1q_f64(a + i + 2), vld1q_f64(b + i + 2));
+        vsum2 = vfmaq_f64(vsum2, vld1q_f64(a + i + 4), vld1q_f64(b + i + 4));
+        vsum3 = vfmaq_f64(vsum3, vld1q_f64(a + i + 6), vld1q_f64(b + i + 6));
     }
+    float64x2_t vsum = vaddq_f64(vaddq_f64(vsum0, vsum1), vaddq_f64(vsum2, vsum3));
 
-    // Residual block of 2
-    if (i + 1 < n) {
-        float64x2_t va = vld1q_f64(a + i);
-        float64x2_t vb = vld1q_f64(b + i);
-        vsum = vmlaq_f64(vsum, va, vb);
-        i += 2;
+    // Residual blocks of 2
+    for (; i + 1 < n; i += 2) {
+        vsum = vfmaq_f64(vsum, vld1q_f64(a + i), vld1q_f64(b + i));
     }
 
     double sum = vaddvq_f64(vsum);
@@ -334,10 +332,10 @@ void neon_gemm_4x4_f32(float* C, const float* A, std::size_t lda, const float* B
     // Column 1 of B is at B + ldb.
 
     auto accumulate_col = [&](float32x4_t& c_col, const float* b_col_ptr) {
-        c_col = vmlaq_n_f32(c_col, a0, b_col_ptr[0]);
-        c_col = vmlaq_n_f32(c_col, a1, b_col_ptr[1]);
-        c_col = vmlaq_n_f32(c_col, a2, b_col_ptr[2]);
-        c_col = vmlaq_n_f32(c_col, a3, b_col_ptr[3]);
+        c_col = vfmaq_n_f32(c_col, a0, b_col_ptr[0]);
+        c_col = vfmaq_n_f32(c_col, a1, b_col_ptr[1]);
+        c_col = vfmaq_n_f32(c_col, a2, b_col_ptr[2]);
+        c_col = vfmaq_n_f32(c_col, a3, b_col_ptr[3]);
     };
 
     accumulate_col(c0, B);
@@ -451,16 +449,19 @@ void neon_fast_exp_f32(float* out, const float* in, std::size_t n) {
         // Range reduction: x = k * ln2 + f, where k = round(x / ln2)
         float32x4_t t = vmulq_f32(x, vlog2e);
         float32x4_t k = vrndnq_f32(t);  // Round to nearest integer
-        float32x4_t f = vmlsq_f32(x, k, vln2);  // f = x - k * ln2
+        // Reduce in base-2: f = t - k (fractional part of x*log2e, |f| <= 0.5)
+        // so that 2^k * 2^f = 2^t = 2^(x*log2e) = e^x. The polynomial below
+        // approximates 2^f, so f MUST be the base-2 remainder, not x - k*ln2.
+        float32x4_t f = vsubq_f32(t, k);
 
         // Polynomial evaluation: 2^f = c0 + c1*f + c2*f^2 + ...
         // Using Horner's method
-        float32x4_t p = vmlaq_f32(vc5, vc6, f);
-        p = vmlaq_f32(vc4, p, f);
-        p = vmlaq_f32(vc3, p, f);
-        p = vmlaq_f32(vc2, p, f);
-        p = vmlaq_f32(vc1, p, f);
-        p = vmlaq_f32(vc0, p, f);
+        float32x4_t p = vfmaq_f32(vc5, vc6, f);
+        p = vfmaq_f32(vc4, p, f);
+        p = vfmaq_f32(vc3, p, f);
+        p = vfmaq_f32(vc2, p, f);
+        p = vfmaq_f32(vc1, p, f);
+        p = vfmaq_f32(vc0, p, f);
 
         // Reconstruct: exp(x) = 2^k * p
         // Use integer manipulation for 2^k
@@ -481,7 +482,7 @@ void neon_fast_exp_f32(float* out, const float* in, std::size_t n) {
 
         float t = x * log2e;
         float k = std::round(t);
-        float f = x - k * ln2;
+        float f = t - k;  // base-2 remainder; 2^k * 2^f = e^x
 
         float p = c6;
         p = c5 + p * f;
@@ -534,15 +535,15 @@ void neon_fast_sin_f32(float* out, const float* in, std::size_t n) {
 
         // Range reduction: x = x - round(x / pi) * pi
         float32x4_t k = vrndnq_f32(vmulq_f32(x, vinv_pi));
-        x = vmlsq_f32(x, k, vpi);
+        x = vfmsq_f32(x, k, vpi);
 
         // sin(x) = x * (c1 + x^2*(c3 + x^2*(c5 + x^2*(c7 + x^2*c9))))
         float32x4_t x2 = vmulq_f32(x, x);
 
-        float32x4_t p = vmlaq_f32(vc7, vc9, x2);
-        p = vmlaq_f32(vc5, p, x2);
-        p = vmlaq_f32(vc3, p, x2);
-        p = vmlaq_f32(vc1, p, x2);
+        float32x4_t p = vfmaq_f32(vc7, vc9, x2);
+        p = vfmaq_f32(vc5, p, x2);
+        p = vfmaq_f32(vc3, p, x2);
+        p = vfmaq_f32(vc1, p, x2);
         p = vmulq_f32(p, x);
 
         // Handle sign flip for odd k
@@ -603,13 +604,13 @@ void neon_fast_cos_f32(float* out, const float* in, std::size_t n) {
         float32x4_t x = vaddq_f32(vld1q_f32(in + i), vhalf_pi);
 
         float32x4_t k = vrndnq_f32(vmulq_f32(x, vinv_pi));
-        x = vmlsq_f32(x, k, vpi);
+        x = vfmsq_f32(x, k, vpi);
 
         float32x4_t x2 = vmulq_f32(x, x);
-        float32x4_t p = vmlaq_f32(vc7, vc9, x2);
-        p = vmlaq_f32(vc5, p, x2);
-        p = vmlaq_f32(vc3, p, x2);
-        p = vmlaq_f32(vc1, p, x2);
+        float32x4_t p = vfmaq_f32(vc7, vc9, x2);
+        p = vfmaq_f32(vc5, p, x2);
+        p = vfmaq_f32(vc3, p, x2);
+        p = vfmaq_f32(vc1, p, x2);
         p = vmulq_f32(p, x);
 
         int32x4_t ki = vcvtq_s32_f32(k);
@@ -672,14 +673,14 @@ void neon_fast_sigmoid_f32(float* out, const float* in, std::size_t n) {
 
         float32x4_t t = vmulq_f32(neg_x, vlog2e);
         float32x4_t k = vrndnq_f32(t);
-        float32x4_t f = vmlsq_f32(neg_x, k, vln2);
+        float32x4_t f = vsubq_f32(t, k);  // base-2 remainder: 2^k*2^f = exp(-x)
 
-        float32x4_t p = vmlaq_f32(vc5, vc6, f);
-        p = vmlaq_f32(vc4, p, f);
-        p = vmlaq_f32(vc3, p, f);
-        p = vmlaq_f32(vc2, p, f);
-        p = vmlaq_f32(vc1, p, f);
-        p = vmlaq_f32(vc0, p, f);
+        float32x4_t p = vfmaq_f32(vc5, vc6, f);
+        p = vfmaq_f32(vc4, p, f);
+        p = vfmaq_f32(vc3, p, f);
+        p = vfmaq_f32(vc2, p, f);
+        p = vfmaq_f32(vc1, p, f);
+        p = vfmaq_f32(vc0, p, f);
 
         int32x4_t ki = vcvtq_s32_f32(k);
         ki = vaddq_s32(ki, vdupq_n_s32(127));
@@ -701,7 +702,7 @@ void neon_fast_sigmoid_f32(float* out, const float* in, std::size_t n) {
 
         float t = neg * log2e;
         float kf = std::round(t);
-        float f = neg - kf * ln2;
+        float f = t - kf;  // base-2 remainder
         float p = c6;
         p = c5 + p * f; p = c4 + p * f; p = c3 + p * f;
         p = c2 + p * f; p = c1 + p * f; p = c0 + p * f;
@@ -754,14 +755,14 @@ void neon_fast_tanh_f32(float* out, const float* in, std::size_t n) {
 
         float32x4_t t = vmulq_f32(neg_2x, vlog2e);
         float32x4_t k = vrndnq_f32(t);
-        float32x4_t f = vmlsq_f32(neg_2x, k, vln2);
+        float32x4_t f = vsubq_f32(t, k);  // base-2 remainder: 2^k*2^f = exp(-2x)
 
-        float32x4_t p = vmlaq_f32(vc5, vc6, f);
-        p = vmlaq_f32(vc4, p, f);
-        p = vmlaq_f32(vc3, p, f);
-        p = vmlaq_f32(vc2, p, f);
-        p = vmlaq_f32(vc1, p, f);
-        p = vmlaq_f32(vc0, p, f);
+        float32x4_t p = vfmaq_f32(vc5, vc6, f);
+        p = vfmaq_f32(vc4, p, f);
+        p = vfmaq_f32(vc3, p, f);
+        p = vfmaq_f32(vc2, p, f);
+        p = vfmaq_f32(vc1, p, f);
+        p = vfmaq_f32(vc0, p, f);
 
         int32x4_t ki = vcvtq_s32_f32(k);
         ki = vaddq_s32(ki, vdupq_n_s32(127));
@@ -771,7 +772,7 @@ void neon_fast_tanh_f32(float* out, const float* in, std::size_t n) {
 
         // sigmoid(2x) = 1/(1+exp(-2x)), then tanh = 2*sig - 1
         float32x4_t sig = vdivq_f32(vone, vaddq_f32(vone, exp_neg));
-        vst1q_f32(out + i, vmlaq_f32(vnegq_f32(vone), vtwo, sig));
+        vst1q_f32(out + i, vfmaq_f32(vnegq_f32(vone), vtwo, sig));
     }
 
     for (; i < n; ++i) {
@@ -784,7 +785,7 @@ void neon_fast_tanh_f32(float* out, const float* in, std::size_t n) {
 
         float t = neg * log2e;
         float kf = std::round(t);
-        float f = neg - kf * ln2;
+        float f = t - kf;  // base-2 remainder
         float p = c6;
         p = c5 + p * f; p = c4 + p * f; p = c3 + p * f;
         p = c2 + p * f; p = c1 + p * f; p = c0 + p * f;
@@ -1037,30 +1038,39 @@ Eigen::VectorXf neon_mat_vec_mul(const Eigen::MatrixXf& A, const Eigen::VectorXf
     Eigen::VectorXf res = Eigen::VectorXf::Zero(A.rows());
 
 #ifdef OPTMATH_USE_NEON
-    // res = A * v
-    // A is col-major. A = [col0 col1 ...]
-    // res = sum(col_i * v_i)
+    // res = A * v, A col-major = [col0 col1 ...], res = sum(col_j * v_j).
+    // Block res rows in registers and sweep ALL columns before storing, so res
+    // is written once per row-strip instead of once per column (the previous
+    // version streamed the whole result vector to memory A.cols() times).
+    const int rows = static_cast<int>(A.rows());
+    const int cols = static_cast<int>(A.cols());
+    const float* vv = v.data();
+    float* r = res.data();
+    int i = 0;
 
-    // We iterate over columns of A (and elements of v)
-    // and accumulate into res.
-
-    for (int j = 0; j < A.cols(); ++j) {
-        float val = v[j];
-        float32x4_t vval = vdupq_n_f32(val);
-
-        int i = 0;
-        float* r_ptr = res.data();
-        const float* a_col = &A(0, j);
-
-        for (; i + 3 < A.rows(); i += 4) {
-            float32x4_t acc = vld1q_f32(r_ptr + i);
-            float32x4_t col = vld1q_f32(a_col + i);
-            acc = vmlaq_f32(acc, col, vval);
-            vst1q_f32(r_ptr + i, acc);
+    for (; i + 7 < rows; i += 8) {
+        float32x4_t acc0 = vdupq_n_f32(0.0f);
+        float32x4_t acc1 = vdupq_n_f32(0.0f);
+        for (int j = 0; j < cols; ++j) {
+            const float* col = &A(0, j) + i;
+            float32x4_t vval = vdupq_n_f32(vv[j]);
+            acc0 = vfmaq_f32(acc0, vld1q_f32(col),     vval);
+            acc1 = vfmaq_f32(acc1, vld1q_f32(col + 4), vval);
         }
-        for (; i < A.rows(); ++i) {
-            res[i] += A(i, j) * val;
+        vst1q_f32(r + i,     acc0);
+        vst1q_f32(r + i + 4, acc1);
+    }
+    for (; i + 3 < rows; i += 4) {
+        float32x4_t acc = vdupq_n_f32(0.0f);
+        for (int j = 0; j < cols; ++j) {
+            acc = vfmaq_f32(acc, vld1q_f32(&A(0, j) + i), vdupq_n_f32(vv[j]));
         }
+        vst1q_f32(r + i, acc);
+    }
+    for (; i < rows; ++i) {
+        float s = 0.0f;
+        for (int j = 0; j < cols; ++j) s += A(i, j) * vv[j];
+        r[i] = s;
     }
 #else
     res = A * v;

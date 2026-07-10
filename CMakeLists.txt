@@ -1,9 +1,30 @@
 cmake_minimum_required(VERSION 3.18)
 
 project(OptMathKernels
-    VERSION 0.5.17
+    VERSION 0.5.18
     LANGUAGES CXX
 )
+
+# Default to a Release build when the user doesn't specify one. With single-
+# config generators (Make/Ninja — the norm on the Pi), an unset build type
+# means empty flags => -O0, silently compiling every NEON/Vulkan-host kernel
+# unoptimized. Guard so a plain `cmake ..` still gets -O3.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING
+        "Build type (Debug/Release/RelWithDebInfo/MinSizeRel)" FORCE)
+    message(STATUS "No CMAKE_BUILD_TYPE specified; defaulting to Release")
+endif()
+
+# Probe for link-time / interprocedural optimization support. Applied (scoped to
+# the OptMathKernels library, Release only) in src/CMakeLists.txt so the NEON
+# kernels — each in its own translation unit — get cross-TU inlining.
+include(CheckIPOSupported)
+check_ipo_supported(RESULT OPTMATH_IPO_SUPPORTED OUTPUT OPTMATH_IPO_ERROR)
+if(OPTMATH_IPO_SUPPORTED)
+    message(STATUS "Interprocedural optimization (LTO) available")
+else()
+    message(STATUS "Interprocedural optimization (LTO) not available: ${OPTMATH_IPO_ERROR}")
+endif()
 
 # Check for CUDA support early (before setting standards)
 include(CheckLanguage)
@@ -194,14 +215,67 @@ endif()
 if (ENABLE_NEON AND ON_ARM)
     message(STATUS "Building with NEON optimizations for ARM")
     add_compile_definitions(OPTMATH_USE_NEON)
+
+    # Tune codegen for the host ARM core. Without this the compiler schedules
+    # for a generic ARMv8-A pipeline and cannot use A76 features (FEAT_FP16,
+    # dotprod) or its dual-FMA scheduling model. On a native SBC build,
+    # -mcpu=native selects the exact core (Cortex-A76 on the Pi 5, Cortex-A720
+    # on the Orange Pi 6); fall back to an explicit A76 target, then to a
+    # generic ARMv8.2 baseline with the features the Pi 5 exposes.
+    include(CheckCXXCompilerFlag)
+    set(OPTMATH_ARCH_FLAG "")
+    check_cxx_compiler_flag("-mcpu=native" HAS_MCPU_NATIVE)
+    if(HAS_MCPU_NATIVE)
+        set(OPTMATH_ARCH_FLAG "-mcpu=native")
+    else()
+        check_cxx_compiler_flag("-mcpu=cortex-a76" HAS_MCPU_A76)
+        if(HAS_MCPU_A76)
+            set(OPTMATH_ARCH_FLAG "-mcpu=cortex-a76")
+        else()
+            check_cxx_compiler_flag("-march=armv8.2-a+fp16+dotprod" HAS_ARMV82_FEATURES)
+            if(HAS_ARMV82_FEATURES)
+                set(OPTMATH_ARCH_FLAG "-march=armv8.2-a+fp16+dotprod")
+            endif()
+        endif()
+    endif()
+    if(OPTMATH_ARCH_FLAG)
+        message(STATUS "  ARM CPU tuning: ${OPTMATH_ARCH_FLAG}")
+        # C++ only — SVE2 TUs carry their own -march, and CUDA (nvcc) would
+        # reject a bare -mcpu flag.
+        add_compile_options($<$<COMPILE_LANGUAGE:CXX>:${OPTMATH_ARCH_FLAG}>)
+    endif()
 elseif(ENABLE_NEON AND NOT ON_ARM)
     message(STATUS "NEON enabled but not on ARM. NEON optimizations will be skipped/simulated.")
 endif()
 
 # --- SVE2 / FCMA / I8MM Detection ---
+# HAS_SVE2 (consumed by src/CMakeLists.txt to decide whether to compile the
+# sve2/*.cpp sources) must reflect whether SVE2 will actually run — NOT merely
+# whether the compiler accepts -march=armv9-a+sve2. A recent GCC/Clang accepts
+# that flag on a Pi 5, but the Cortex-A76 is ARMv8.2-A with no SVE2: compiling
+# those TUs at ARMv9 baseline lets non-intrinsic instructions outside the
+# hwcap-guarded paths fault (SIGILL). So we additionally require the build host
+# to actually report SVE2 (native build), with an override for cross-compiles.
+option(OPTMATH_FORCE_SVE2 "Force-enable SVE2 sources (cross-compiling to an SVE2 target)" OFF)
 if (ENABLE_SVE2 AND ON_ARM)
     include(CheckCXXCompilerFlag)
-    check_cxx_compiler_flag("-march=armv9-a+sve2" HAS_SVE2)
+    check_cxx_compiler_flag("-march=armv9-a+sve2" COMPILER_ACCEPTS_SVE2)
+
+    set(CPU_HAS_SVE2 FALSE)
+    if(EXISTS "/proc/cpuinfo")
+        file(READ "/proc/cpuinfo" _optmath_cpuinfo)
+        string(FIND "${_optmath_cpuinfo}" "sve2" _optmath_sve2_pos)
+        if(NOT _optmath_sve2_pos EQUAL -1)
+            set(CPU_HAS_SVE2 TRUE)
+        endif()
+    endif()
+
+    if(COMPILER_ACCEPTS_SVE2 AND (CPU_HAS_SVE2 OR OPTMATH_FORCE_SVE2))
+        set(HAS_SVE2 TRUE)
+    else()
+        set(HAS_SVE2 FALSE)
+    endif()
+
     if(HAS_SVE2)
         message(STATUS "Building with SVE2 optimizations for ARM")
         add_compile_definitions(OPTMATH_USE_SVE2)
@@ -220,8 +294,12 @@ if (ENABLE_SVE2 AND ON_ARM)
                 message(STATUS "  I8MM not supported by compiler")
             endif()
         endif()
-    else()
+    elseif(NOT COMPILER_ACCEPTS_SVE2)
         message(STATUS "SVE2 not supported by compiler. SVE2 optimizations disabled.")
+    else()
+        message(STATUS "SVE2 accepted by compiler but host CPU lacks SVE2 "
+                       "(e.g. Cortex-A76 / Pi 5); SVE2 sources skipped. "
+                       "Use -DOPTMATH_FORCE_SVE2=ON to override for cross-builds.")
     endif()
 elseif(ENABLE_SVE2 AND NOT ON_ARM)
     message(STATUS "SVE2 enabled but not on ARM. SVE2 optimizations will be skipped.")

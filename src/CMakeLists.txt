@@ -121,7 +121,7 @@ if(ENABLE_VULKAN)
 
              add_custom_command(
                 OUTPUT ${OUTPUT_FILE}
-                COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.1 ${SOURCE_FILE} -o ${OUTPUT_FILE}
+                COMMAND ${GLSLANG_VALIDATOR} -V --target-env vulkan1.2 ${SOURCE_FILE} -o ${OUTPUT_FILE}
                 DEPENDS ${SOURCE_FILE}
                 COMMENT "Compiling ${SHADER} to SPIR-V"
             )
@@ -141,6 +141,13 @@ endif()
 
 add_library(OptMathKernels ${SOURCES})
 add_library(OptMathKernels::OptMathKernels ALIAS OptMathKernels)
+
+# Enable LTO for this library in Release builds only (probe done in root).
+# Scoped to the target so the fetched Eigen/GoogleTest builds are unaffected.
+if(OPTMATH_IPO_SUPPORTED)
+    set_target_properties(OptMathKernels PROPERTIES
+        INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+endif()
 
 # Include directories
 target_include_directories(OptMathKernels

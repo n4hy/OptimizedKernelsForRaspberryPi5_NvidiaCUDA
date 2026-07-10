@@ -177,12 +177,12 @@ namespace neon {
     // Vectorized Transcendental Functions (Fast Approximations)
     // =========================================================================
     // These are SIMD-optimized approximations trading accuracy for speed.
-    // Typical accuracy: exp ~12%, sigmoid ~3%, tanh ~6% relative error.
+    // Typical accuracy: exp ~1e-6, sigmoid/tanh ~1e-6 relative error.
     // Suitable for ML inference and non-precision-critical DSP.
 
     /**
      * @brief Fast vectorized exp using range reduction and 6th-order polynomial
-     * ~12% relative error at extremes, better near zero
+     * ~1e-6 relative error for |x| < 88 (base-2 range reduction)
      */
     void neon_fast_exp_f32(float* out, const float* in, std::size_t n);
 
@@ -199,13 +199,13 @@ namespace neon {
 
     /**
      * @brief Fast vectorized sigmoid: 1/(1+exp(-x))
-     * ~3% error (inherits from fast exp)
+     * ~1e-6 error (inherits from fast exp)
      */
     void neon_fast_sigmoid_f32(float* out, const float* in, std::size_t n);
 
     /**
      * @brief Fast vectorized tanh: 2*sigmoid(2x)-1
-     * ~6% error (compounds from sigmoid)
+     * ~1e-6 error (inherits from fast exp)
      */
     void neon_fast_tanh_f32(float* out, const float* in, std::size_t n);
 
@@ -228,7 +228,9 @@ namespace neon {
     void neon_complex_mul_interleaved_f32(float* out, const float* a, const float* b, std::size_t n);
     void neon_complex_conj_mul_interleaved_f32(float* out, const float* a, const float* b, std::size_t n);
 
-    // Complex dot product: sum(a * conj(b))
+    // Complex dot product: sum(conj(a) * b), matching Eigen's a.dot(b) convention.
+    // NOTE: this conjugates the FIRST argument (unlike neon_complex_conj_mul_f32
+    // and xcorr_complex_f32, which compute a * conj(b)).
     void neon_complex_dot_f32(float* out_re, float* out_im,
                               const float* a_re, const float* a_im,
                               const float* b_re, const float* b_im,

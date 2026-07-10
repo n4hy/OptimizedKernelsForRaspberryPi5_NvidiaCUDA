@@ -57,7 +57,29 @@ void neon_conv2d_f32(float* out, const float* in,
     for (std::size_t r = 0; r < out_rows; ++r) {
         std::size_t c = 0;
 
-        // NEON path: process 4 output columns at a time
+        // Process 8 output columns at a time: two independent tap-accumulation
+        // chains keep both A76 FP pipes busy across the kernel loop (a single
+        // accumulator would serialize on the ~4-cycle FMA latency for big kernels).
+        for (; c + 7 < out_cols; c += 8) {
+            float32x4_t vsum0 = vdupq_n_f32(0.0f);
+            float32x4_t vsum1 = vdupq_n_f32(0.0f);
+
+            for (std::size_t kr = 0; kr < kernel_rows; ++kr) {
+                const float* in_row = in + (r + kr) * in_cols + c;
+                const float* k_row = kernel + kr * kernel_cols;
+
+                for (std::size_t kc = 0; kc < kernel_cols; ++kc) {
+                    float32x4_t vk = vdupq_n_f32(k_row[kc]);
+                    vsum0 = vfmaq_f32(vsum0, vld1q_f32(in_row + kc),     vk);
+                    vsum1 = vfmaq_f32(vsum1, vld1q_f32(in_row + kc + 4), vk);
+                }
+            }
+
+            vst1q_f32(out + r * out_cols + c,     vsum0);
+            vst1q_f32(out + r * out_cols + c + 4, vsum1);
+        }
+
+        // NEON path: process remaining 4 output columns at a time
         for (; c + 3 < out_cols; c += 4) {
             float32x4_t vsum = vdupq_n_f32(0.0f);
 
@@ -66,9 +88,7 @@ void neon_conv2d_f32(float* out, const float* in,
                 const float* k_row = kernel + kr * kernel_cols;
 
                 for (std::size_t kc = 0; kc < kernel_cols; ++kc) {
-                    float32x4_t vin = vld1q_f32(in_row + kc);
-                    float32x4_t vk = vdupq_n_f32(k_row[kc]);
-                    vsum = vmlaq_f32(vsum, vin, vk);
+                    vsum = vfmaq_f32(vsum, vld1q_f32(in_row + kc), vdupq_n_f32(k_row[kc]));
                 }
             }
 
@@ -194,21 +214,36 @@ void neon_conv2d_3x3_f32(float* out, const float* in,
         const float* r2 = in + (r + 2) * in_cols;
 
         std::size_t c = 0;
-        for (; c + 3 < out_cols; c += 4) {
-            float32x4_t vsum;
-            // Row 0
-            vsum = vmulq_f32(vld1q_f32(r0 + c), vk00);
-            vsum = vmlaq_f32(vsum, vld1q_f32(r0 + c + 1), vk01);
-            vsum = vmlaq_f32(vsum, vld1q_f32(r0 + c + 2), vk02);
-            // Row 1
-            vsum = vmlaq_f32(vsum, vld1q_f32(r1 + c), vk10);
-            vsum = vmlaq_f32(vsum, vld1q_f32(r1 + c + 1), vk11);
-            vsum = vmlaq_f32(vsum, vld1q_f32(r1 + c + 2), vk12);
-            // Row 2
-            vsum = vmlaq_f32(vsum, vld1q_f32(r2 + c), vk20);
-            vsum = vmlaq_f32(vsum, vld1q_f32(r2 + c + 1), vk21);
-            vsum = vmlaq_f32(vsum, vld1q_f32(r2 + c + 2), vk22);
+        // Bulk: reuse loads via vext — 2 loads/row instead of 3. The three
+        // horizontal taps overlap by 3 lanes, so a single [c..c+3]+[c+4..c+7]
+        // pair yields all shifts. Needs the second quad (c+4..c+7) in bounds.
+        for (; c + 7 < in_cols; c += 4) {
+            float32x4_t r0a = vld1q_f32(r0 + c), r0b = vld1q_f32(r0 + c + 4);
+            float32x4_t r1a = vld1q_f32(r1 + c), r1b = vld1q_f32(r1 + c + 4);
+            float32x4_t r2a = vld1q_f32(r2 + c), r2b = vld1q_f32(r2 + c + 4);
 
+            float32x4_t vsum = vmulq_f32(r0a, vk00);
+            vsum = vfmaq_f32(vsum, vextq_f32(r0a, r0b, 1), vk01);
+            vsum = vfmaq_f32(vsum, vextq_f32(r0a, r0b, 2), vk02);
+            vsum = vfmaq_f32(vsum, r1a, vk10);
+            vsum = vfmaq_f32(vsum, vextq_f32(r1a, r1b, 1), vk11);
+            vsum = vfmaq_f32(vsum, vextq_f32(r1a, r1b, 2), vk12);
+            vsum = vfmaq_f32(vsum, r2a, vk20);
+            vsum = vfmaq_f32(vsum, vextq_f32(r2a, r2b, 1), vk21);
+            vsum = vfmaq_f32(vsum, vextq_f32(r2a, r2b, 2), vk22);
+            vst1q_f32(out + r * out_cols + c, vsum);
+        }
+        // Remaining full vector blocks near the right edge (3 loads/row, safe).
+        for (; c + 3 < out_cols; c += 4) {
+            float32x4_t vsum = vmulq_f32(vld1q_f32(r0 + c), vk00);
+            vsum = vfmaq_f32(vsum, vld1q_f32(r0 + c + 1), vk01);
+            vsum = vfmaq_f32(vsum, vld1q_f32(r0 + c + 2), vk02);
+            vsum = vfmaq_f32(vsum, vld1q_f32(r1 + c),     vk10);
+            vsum = vfmaq_f32(vsum, vld1q_f32(r1 + c + 1), vk11);
+            vsum = vfmaq_f32(vsum, vld1q_f32(r1 + c + 2), vk12);
+            vsum = vfmaq_f32(vsum, vld1q_f32(r2 + c),     vk20);
+            vsum = vfmaq_f32(vsum, vld1q_f32(r2 + c + 1), vk21);
+            vsum = vfmaq_f32(vsum, vld1q_f32(r2 + c + 2), vk22);
             vst1q_f32(out + r * out_cols + c, vsum);
         }
 
@@ -250,16 +285,20 @@ void neon_conv2d_5x5_f32(float* out, const float* in,
     for (std::size_t r = 0; r < out_rows; ++r) {
         std::size_t c = 0;
 
+        // c+3 < out_cols (= in_cols-4) guarantees cols c+4..c+7 are in bounds,
+        // so two loads per row + vext cover all 5 taps (was 5 loads/row).
         for (; c + 3 < out_cols; c += 4) {
             float32x4_t vsum = vdupq_n_f32(0.0f);
 
             for (int kr = 0; kr < 5; ++kr) {
                 const float* row = in + (r + kr) * in_cols + c;
-                vsum = vmlaq_f32(vsum, vld1q_f32(row),     vk[kr][0]);
-                vsum = vmlaq_f32(vsum, vld1q_f32(row + 1), vk[kr][1]);
-                vsum = vmlaq_f32(vsum, vld1q_f32(row + 2), vk[kr][2]);
-                vsum = vmlaq_f32(vsum, vld1q_f32(row + 3), vk[kr][3]);
-                vsum = vmlaq_f32(vsum, vld1q_f32(row + 4), vk[kr][4]);
+                float32x4_t va = vld1q_f32(row);
+                float32x4_t vb = vld1q_f32(row + 4);
+                vsum = vfmaq_f32(vsum, va,                    vk[kr][0]);
+                vsum = vfmaq_f32(vsum, vextq_f32(va, vb, 1),  vk[kr][1]);
+                vsum = vfmaq_f32(vsum, vextq_f32(va, vb, 2),  vk[kr][2]);
+                vsum = vfmaq_f32(vsum, vextq_f32(va, vb, 3),  vk[kr][3]);
+                vsum = vfmaq_f32(vsum, vb,                    vk[kr][4]);
             }
 
             vst1q_f32(out + r * out_cols + c, vsum);

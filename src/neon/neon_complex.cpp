@@ -8,7 +8,7 @@
  *
  * Complex Arithmetic (Split Format):
  *   neon_complex_mul_f32 computes (ar*br - ai*bi) + j*(ar*bi + ai*br)
- *   via vmulq_f32/vmlaq_f32/vmlsq_f32. neon_complex_conj_mul_f32 for
+ *   via vmulq_f32/vfmaq_f32/vfmsq_f32. neon_complex_conj_mul_f32 for
  *   cross-correlation: a*conj(b). neon_complex_add_f32 and
  *   neon_complex_scale_f32 for basic operations.
  *
@@ -64,11 +64,11 @@ void neon_complex_mul_f32(float* out_re, float* out_im,
 
         // out_re = a_re*b_re - a_im*b_im
         float32x4_t or_val = vmulq_f32(ar, br);
-        or_val = vmlsq_f32(or_val, ai, bi);
+        or_val = vfmsq_f32(or_val, ai, bi);
 
         // out_im = a_re*b_im + a_im*b_re
         float32x4_t oi_val = vmulq_f32(ar, bi);
-        oi_val = vmlaq_f32(oi_val, ai, br);
+        oi_val = vfmaq_f32(oi_val, ai, br);
 
         vst1q_f32(out_re + i, or_val);
         vst1q_f32(out_im + i, oi_val);
@@ -102,11 +102,11 @@ void neon_complex_conj_mul_f32(float* out_re, float* out_im,
 
         // out_re = a_re*b_re + a_im*b_im
         float32x4_t or_val = vmulq_f32(ar, br);
-        or_val = vmlaq_f32(or_val, ai, bi);
+        or_val = vfmaq_f32(or_val, ai, bi);
 
         // out_im = a_im*b_re - a_re*b_im
         float32x4_t oi_val = vmulq_f32(ai, br);
-        oi_val = vmlsq_f32(oi_val, ar, bi);
+        oi_val = vfmsq_f32(oi_val, ar, bi);
 
         vst1q_f32(out_re + i, or_val);
         vst1q_f32(out_im + i, oi_val);
@@ -141,11 +141,11 @@ void neon_complex_mul_interleaved_f32(float* out, const float* a, const float* b
 
         // out_re = a_re*b_re - a_im*b_im
         float32x4_t or_val = vmulq_f32(ar, br);
-        or_val = vmlsq_f32(or_val, ai, bi);
+        or_val = vfmsq_f32(or_val, ai, bi);
 
         // out_im = a_re*b_im + a_im*b_re
         float32x4_t oi_val = vmulq_f32(ar, bi);
-        oi_val = vmlaq_f32(oi_val, ai, br);
+        oi_val = vfmaq_f32(oi_val, ai, br);
 
         float32x4x2_t result;
         result.val[0] = or_val;
@@ -188,11 +188,11 @@ void neon_complex_conj_mul_interleaved_f32(float* out, const float* a, const flo
 
         // out_re = a_re*b_re + a_im*b_im
         float32x4_t or_val = vmulq_f32(ar, br);
-        or_val = vmlaq_f32(or_val, ai, bi);
+        or_val = vfmaq_f32(or_val, ai, bi);
 
         // out_im = a_im*b_re - a_re*b_im
         float32x4_t oi_val = vmulq_f32(ai, br);
-        oi_val = vmlsq_f32(oi_val, ar, bi);
+        oi_val = vfmsq_f32(oi_val, ar, bi);
 
         float32x4x2_t result;
         result.val[0] = or_val;
@@ -238,10 +238,10 @@ void neon_complex_dot_f32(float* out_re, float* out_im,
 
         // conj(a) * b = (ar - j*ai) * (br + j*bi)
         //             = (ar*br + ai*bi) + j*(ar*bi - ai*br)
-        sum_re = vmlaq_f32(sum_re, ar, br);
-        sum_re = vmlaq_f32(sum_re, ai, bi);
-        sum_im = vmlaq_f32(sum_im, ar, bi);
-        sum_im = vmlsq_f32(sum_im, ai, br);
+        sum_re = vfmaq_f32(sum_re, ar, br);
+        sum_re = vfmaq_f32(sum_re, ai, bi);
+        sum_im = vfmaq_f32(sum_im, ar, bi);
+        sum_im = vfmsq_f32(sum_im, ai, br);
     }
 
     float re = vaddvq_f32(sum_re);
@@ -274,7 +274,7 @@ void neon_complex_magnitude_f32(float* out, const float* re, const float* im, st
         float32x4_t vi = vld1q_f32(im + i);
 
         float32x4_t mag_sq = vmulq_f32(vr, vr);
-        mag_sq = vmlaq_f32(mag_sq, vi, vi);
+        mag_sq = vfmaq_f32(mag_sq, vi, vi);
 
         // Use NEON fast reciprocal sqrt approximation followed by multiplication
         // sqrt(x) = x * rsqrt(x)
@@ -310,7 +310,7 @@ void neon_complex_magnitude_squared_f32(float* out, const float* re, const float
         float32x4_t vi = vld1q_f32(im + i);
 
         float32x4_t mag_sq = vmulq_f32(vr, vr);
-        mag_sq = vmlaq_f32(mag_sq, vi, vi);
+        mag_sq = vfmaq_f32(mag_sq, vi, vi);
 
         vst1q_f32(out + i, mag_sq);
     }
@@ -376,11 +376,11 @@ void neon_complex_scale_f32(float* out_re, float* out_im,
 
         // out_re = in_re*scale_re - in_im*scale_im
         float32x4_t or_val = vmulq_f32(ir, sr);
-        or_val = vmlsq_f32(or_val, ii, si);
+        or_val = vfmsq_f32(or_val, ii, si);
 
         // out_im = in_re*scale_im + in_im*scale_re
         float32x4_t oi_val = vmulq_f32(ir, si);
-        oi_val = vmlaq_f32(oi_val, ii, sr);
+        oi_val = vfmaq_f32(oi_val, ii, sr);
 
         vst1q_f32(out_re + i, or_val);
         vst1q_f32(out_im + i, oi_val);
