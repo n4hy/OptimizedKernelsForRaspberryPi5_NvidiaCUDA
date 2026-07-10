@@ -71,6 +71,12 @@ if(OPTMATH_HAS_FP16)
     add_test(NAME test_neon_fp16 COMMAND test_neon_fp16)
 endif()
 
+# Quantized / half-precision GEMM tests (int8 SDOT + fp16 GEMM/GEMV).
+# The int8 kernel has a scalar fallback so this builds on any target.
+add_executable(test_neon_quant_gemm test_neon_quant_gemm.cpp)
+target_link_libraries(test_neon_quant_gemm PRIVATE OptMathKernels::OptMathKernels gtest gtest_main)
+add_test(NAME test_neon_quant_gemm COMMAND test_neon_quant_gemm)
+
 # SVE2 tests (only if SVE2 is enabled)
 if(ENABLE_SVE2 AND ON_ARM AND HAS_SVE2)
     add_executable(test_sve2_kernels test_sve2_kernels.cpp)

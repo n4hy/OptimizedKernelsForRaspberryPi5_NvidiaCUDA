@@ -54,6 +54,9 @@ void neon_conv2d_f32(float* out, const float* in,
     const std::size_t out_cols = in_cols - kernel_cols + 1;
 
 #ifdef OPTMATH_USE_NEON
+    // Output rows are independent (each writes a disjoint row of out). Split
+    // across the 4 A76 cores; skip the fork for tiny images where it wouldn't pay.
+    #pragma omp parallel for schedule(static) if(out_rows >= 64)
     for (std::size_t r = 0; r < out_rows; ++r) {
         std::size_t c = 0;
 
@@ -107,6 +110,7 @@ void neon_conv2d_f32(float* out, const float* in,
         }
     }
 #else
+    #pragma omp parallel for schedule(static) if(out_rows >= 64)
     for (std::size_t r = 0; r < out_rows; ++r) {
         for (std::size_t c = 0; c < out_cols; ++c) {
             float sum = 0.0f;
@@ -139,7 +143,8 @@ void neon_conv2d_separable_f32(float* out, const float* in,
     // Intermediate buffer: apply row kernel along each row
     std::vector<float> mid(mid_rows * mid_cols);
 
-    // Pass 1: Row convolution (1D FIR along each row)
+    // Pass 1: Row convolution (1D FIR along each row) — rows independent.
+    #pragma omp parallel for schedule(static) if(mid_rows >= 64)
     for (std::size_t r = 0; r < mid_rows; ++r) {
         const float* row_in = in + r * in_cols;
         float* row_out = mid.data() + r * mid_cols;
@@ -148,6 +153,7 @@ void neon_conv2d_separable_f32(float* out, const float* in,
 
     // Pass 2: Column convolution on the intermediate result
 #ifdef OPTMATH_USE_NEON
+    #pragma omp parallel for schedule(static) if(out_rows >= 64)
     for (std::size_t r = 0; r < out_rows; ++r) {
         std::size_t c = 0;
 
@@ -157,7 +163,9 @@ void neon_conv2d_separable_f32(float* out, const float* in,
             for (std::size_t k = 0; k < col_kernel_len; ++k) {
                 float32x4_t vin = vld1q_f32(&mid[(r + k) * mid_cols + c]);
                 float32x4_t vk = vdupq_n_f32(col_kernel[k]);
-                vsum = vmlaq_f32(vsum, vin, vk);
+                // vfmaq (fused, single-rounding) for rounding consistency with
+                // the rest of the file; vmlaq is not guaranteed to fuse.
+                vsum = vfmaq_f32(vsum, vin, vk);
             }
 
             vst1q_f32(out + r * out_cols + c, vsum);
@@ -172,6 +180,7 @@ void neon_conv2d_separable_f32(float* out, const float* in,
         }
     }
 #else
+    #pragma omp parallel for schedule(static) if(out_rows >= 64)
     for (std::size_t r = 0; r < out_rows; ++r) {
         for (std::size_t c = 0; c < out_cols; ++c) {
             float sum = 0.0f;
@@ -208,6 +217,7 @@ void neon_conv2d_3x3_f32(float* out, const float* in,
     float32x4_t vk21 = vdupq_n_f32(kernel[7]);
     float32x4_t vk22 = vdupq_n_f32(kernel[8]);
 
+    #pragma omp parallel for schedule(static) if(out_rows >= 64)
     for (std::size_t r = 0; r < out_rows; ++r) {
         const float* r0 = in + r * in_cols;
         const float* r1 = in + (r + 1) * in_cols;
@@ -282,6 +292,7 @@ void neon_conv2d_5x5_f32(float* out, const float* in,
         }
     }
 
+    #pragma omp parallel for schedule(static) if(out_rows >= 64)
     for (std::size_t r = 0; r < out_rows; ++r) {
         std::size_t c = 0;
 

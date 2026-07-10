@@ -190,12 +190,23 @@ static void pack_B_panel(
     size_t k,
     size_t n) {
 
-    for (size_t p = 0; p < k; ++p) {
-        for (size_t j = 0; j < n; ++j) {
-            packed[p * NR + j] = B[p + j * ldb];
+    // B is column-major, so column j (B + j*ldb) is contiguous in p. Iterate
+    // columns on the outside and rows on the inside so B is read sequentially
+    // (the A76 HW prefetcher loves this) — the old p-outer/j-inner order strode
+    // B by ldb every element, touching a fresh cache line each time. The strided
+    // writes now land in the small, L1-resident packed buffer, which is cheap.
+    for (size_t j = 0; j < n; ++j) {
+        const float* bcol = B + j * ldb;
+        if (j + 1 < n) {
+            __builtin_prefetch(B + (j + 1) * ldb, 0, 3);  // next column, read
         }
-        // Zero-pad if n < NR
-        for (size_t j = n; j < NR; ++j) {
+        for (size_t p = 0; p < k; ++p) {
+            packed[p * NR + j] = bcol[p];
+        }
+    }
+    // Zero-pad columns n..NR-1
+    for (size_t j = n; j < NR; ++j) {
+        for (size_t p = 0; p < k; ++p) {
             packed[p * NR + j] = 0.0f;
         }
     }
@@ -223,7 +234,14 @@ void neon_gemm_blocked_f32(
         }
     }
 
-    // Loop over blocks of N (columns of B and C)
+    // Loop over blocks of N (columns of B and C).
+    // Parallelized across the 4 Cortex-A76 cores: each thread owns a disjoint
+    // set of column blocks, writes disjoint columns of C (no races), and packs
+    // B/A into its own thread_local packed_B/packed_A panels. The jc loop is the
+    // only safe level to split — packed_B is packed per-jc-block and reused
+    // across the inner ic loop, so parallelizing ic would read another thread's
+    // panel. schedule(dynamic) balances the smaller tail block.
+    #pragma omp parallel for schedule(dynamic)
     for (size_t jc = 0; jc < N; jc += NC) {
         size_t nc = std::min(NC, N - jc);
 

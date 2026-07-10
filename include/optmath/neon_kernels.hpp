@@ -82,6 +82,19 @@ namespace neon {
                                    PolyphaseResamplerState& state);
 
     /**
+     * @brief Streaming resample with an explicit output-capacity guard.
+     * Identical to the 4-argument overload but never writes past out[out_capacity-1],
+     * so a caller that sized `out` per-chunk cannot heap-overflow if leftover phase
+     * state produces a burst. Returns the number of samples actually written
+     * (clamped to out_capacity); any excess tail samples are dropped rather than
+     * written out of bounds. The 4-argument overload delegates here with an
+     * unbounded capacity, preserving its exact behavior.
+     */
+    std::size_t neon_resample_f32(float* out, std::size_t out_capacity,
+                                   const float* in, std::size_t input_len,
+                                   PolyphaseResamplerState& state);
+
+    /**
      * @brief One-shot polyphase resampler (non-streaming, zero-padded edges).
      * Output length is written to *output_len.
      * Caller must allocate out with at least ceil(input_len * L / M) + 1 floats.
@@ -119,6 +132,18 @@ namespace neon {
     void neon_biquad_cascade_f32(float* out, const float* in, std::size_t n,
                                   const BiquadCoeffs* coeffs, BiquadState* states,
                                   std::size_t n_sections);
+
+    /**
+     * @brief Process 4 INDEPENDENT channels through 4 biquads in one NEON pass.
+     * The DF2T feedback serializes a single channel, but four independent
+     * channels map to the four NEON lanes and run in parallel — ~4x the scalar
+     * per-channel throughput. Layout is channel-interleaved: in[4*i + c] and
+     * out[4*i + c] are channel c's sample i, for i in [0,n), c in [0,4).
+     * coeffs[c]/state[c] belong to channel c (channels may use the same or
+     * different filters). out and in may alias.
+     */
+    void neon_biquad_x4_f32(float* out, const float* in, std::size_t n,
+                            const BiquadCoeffs coeffs[4], BiquadState state[4]);
 
     // Biquad design helpers (Audio EQ Cookbook formulas)
     BiquadCoeffs neon_biquad_lowpass(float fc, float fs, float Q = 0.7071067811865476f);

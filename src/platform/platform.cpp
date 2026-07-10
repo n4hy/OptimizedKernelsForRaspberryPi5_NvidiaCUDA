@@ -181,6 +181,19 @@ static CpuInfo build_cpu_info() {
                 if (!info.has_bf16)
                     info.has_bf16 = (padded.find(" bf16 ") != std::string::npos ||
                                      padded.find("\tbf16 ") != std::string::npos);
+                // NEON/ASIMD (baseline on AArch64)
+                if (!info.has_neon)
+                    info.has_neon = (padded.find(" asimd ") != std::string::npos ||
+                                     padded.find("\tasimd ") != std::string::npos);
+                // Int8 dot product: SDOT/UDOT (kernel reports it as "asimddp")
+                if (!info.has_dotprod)
+                    info.has_dotprod = (padded.find(" asimddp ") != std::string::npos ||
+                                        padded.find("\tasimddp ") != std::string::npos);
+                // Native FP16 arithmetic: needs both scalar (fphp) and vector
+                // (asimdhp) half-precision. The Cortex-A76 reports both.
+                if (!info.has_fp16)
+                    info.has_fp16 = (padded.find(" asimdhp ") != std::string::npos ||
+                                     padded.find("\tasimdhp ") != std::string::npos);
             }
         }
     }
@@ -410,10 +423,23 @@ std::size_t get_gemm_kc() {
 
 std::size_t get_gemm_nc() {
     std::size_t l3 = get_l3_cache_size();
-    // For large L3 (>=8MB, e.g. CIX P1 12MB), use NC=2048 to better
-    // utilize L3: B panel = KC*NC*4 = 512*2048*4 = 4MB (33% of 12MB).
-    // For smaller L3 (<8MB, e.g. Pi5 2MB), NC=512.
-    return (l3 >= 8 * 1024 * 1024) ? 2048 : 512;
+    // Large L3 (>=8MB, e.g. CIX P1 12MB): target L3 with NC=2048
+    //   -> B panel = KC*NC*4 = 512*2048*4 = 4MB (33% of 12MB).
+    if (l3 >= 8 * 1024 * 1024) return 2048;
+
+    // Small L3 (e.g. Pi 5, 2MB): the resident packed-B panel (KC*NC*4) must
+    // share L2 with the streamed packed-A panel (MC*KC*4) and the C micro-tiles.
+    // The old NC=512 made the B panel 256*512*4 = 512KB = the whole 512KB L2,
+    // evicting A/C every pass. Size the B panel to ~half of L2 instead (Goto
+    // blocking): L2=512KB, KC=256 -> NC = (256KB)/(256*4) = 256.
+    std::size_t l2 = get_l2_cache_size();
+    if (l2 == 0) l2 = 512 * 1024;  // A76 default
+    std::size_t kc = get_gemm_kc();
+    if (kc == 0) kc = 256;
+    std::size_t nc = (l2 / 2) / (kc * sizeof(float));
+    nc = (nc / 8) * 8;             // multiple of the microkernel width (NR=8)
+    if (nc < 8) nc = 8;
+    return nc;
 }
 
 } // namespace platform

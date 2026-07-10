@@ -24,6 +24,7 @@
 #include "optmath/neon_kernels.hpp"
 #include <cstring>
 #include <algorithm>
+#include <limits>
 
 #ifdef OPTMATH_USE_NEON
 #include <arm_neon.h>
@@ -66,6 +67,14 @@ void neon_resample_init(PolyphaseResamplerState& state,
 
 std::size_t neon_resample_f32(float* out, const float* in, std::size_t input_len,
                                PolyphaseResamplerState& state) {
+    // Delegate to the capacity-guarded overload with no limit — exact prior behavior.
+    return neon_resample_f32(out, std::numeric_limits<std::size_t>::max(),
+                             in, input_len, state);
+}
+
+std::size_t neon_resample_f32(float* out, std::size_t out_capacity,
+                               const float* in, std::size_t input_len,
+                               PolyphaseResamplerState& state) {
     std::size_t n_out = 0;
     const std::size_t L = state.L;
     const std::size_t M = state.M;
@@ -88,8 +97,13 @@ std::size_t neon_resample_f32(float* out, const float* in, std::size_t input_len
         // Produce output samples while phase accumulator is within range
         while (state.phase_acc < L) {
             // y = dot(reversed_phase[phase_acc], delay_window, n_taps)
-            out[n_out++] = neon_dot_f32(state.phases[state.phase_acc].data(),
-                                         window, n_taps);
+            float y = neon_dot_f32(state.phases[state.phase_acc].data(),
+                                   window, n_taps);
+            // Capacity guard: never write past the caller's buffer. Under the
+            // documented sizing (Eigen wrapper / oneshot) this never triggers.
+            if (n_out < out_capacity) {
+                out[n_out++] = y;
+            }
             state.phase_acc += M;
         }
         state.phase_acc -= L;

@@ -236,3 +236,41 @@ TEST(RadarCAFTest, CAFZeroDoppler) {
     caf_mag.row(0).maxCoeff(&max_col);
     EXPECT_NEAR(static_cast<float>(max_col), delay, 2);
 }
+
+// FFT-based doppler_fft_f32: verify the power-of-2 FFT path matches a direct
+// DFT reference, and that the non-power-of-2 fallback also matches.
+static void doppler_dft_ref(std::vector<float>& orr, std::vector<float>& oii,
+                            const std::vector<float>& ir, const std::vector<float>& ii,
+                            int P, int R, int F) {
+    const double tp = 6.283185307179586;
+    for (int r = 0; r < R; ++r)
+        for (int k = 0; k < F; ++k) {
+            double sr = 0, si = 0;
+            for (int p = 0; p < P; ++p) {
+                double a = -tp * k * p / F;
+                sr += ir[p * R + r] * std::cos(a) - ii[p * R + r] * std::sin(a);
+                si += ir[p * R + r] * std::sin(a) + ii[p * R + r] * std::cos(a);
+            }
+            orr[k * R + r] = (float)sr; oii[k * R + r] = (float)si;
+        }
+}
+
+TEST(DopplerFFT, MatchesDFTReference) {
+    struct Shape { int P, R, F; };
+    for (Shape s : { Shape{16,8,16}, Shape{100,4,128}, Shape{50,3,64},
+                     Shape{200,2,256}, Shape{7,5,10} /* non-pow2 -> DFT */ }) {
+        std::vector<float> ir(s.P*s.R), ii(s.P*s.R),
+                           orr(s.F*s.R), oii(s.F*s.R), rr(s.F*s.R), ri(s.F*s.R);
+        for (int i = 0; i < s.P*s.R; ++i) {
+            ir[i] = std::sin(0.3f*i) + 0.5f; ii[i] = std::cos(0.17f*i);
+        }
+        doppler_fft_f32(orr.data(), oii.data(), ir.data(), ii.data(), s.P, s.R, s.F);
+        doppler_dft_ref(rr, ri, ir, ii, s.P, s.R, s.F);
+        float maxerr = 0, maxmag = 1e-6f;
+        for (int i = 0; i < s.F*s.R; ++i) {
+            maxerr = std::max(maxerr, std::max(std::fabs(orr[i]-rr[i]), std::fabs(oii[i]-ri[i])));
+            maxmag = std::max(maxmag, std::fabs(rr[i]));
+        }
+        EXPECT_LT(maxerr / maxmag, 1e-4f) << "P=" << s.P << " R=" << s.R << " F=" << s.F;
+    }
+}

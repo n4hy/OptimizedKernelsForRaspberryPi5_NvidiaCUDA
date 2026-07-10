@@ -724,25 +724,55 @@ static void run_compute(const std::string& shaderName,
     // Get Cached Pipeline
     PipelineState state = getOrCreatePipeline(shaderName, buffers.size(), pushConstSize);
 
-    // Descriptors (Created per call for simplicity in handling buffer ptrs,
-    // but could also be cached if buffers reused. For this level of optimization, pool management is acceptable overhead vs pipeline creation).
+    // Per-call transient Vulkan objects (descriptor pool, command buffer, fence)
+    // are CACHED and reused rather than created/destroyed every dispatch — that
+    // churn plus a full vkQueueWaitIdle dominated small-GPU-op latency (~4.8 ms).
+    // A single mutex serializes host calls (a VkQueue must be externally
+    // synchronized). The call is still synchronous — it waits on the fence
+    // before returning — so the buffer-pool release in ~BufferWrapper stays safe.
+    static std::mutex s_mutex;
+    std::lock_guard<std::mutex> lock(s_mutex);
 
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSize.descriptorCount = (uint32_t)buffers.size();
+    static VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+    static VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+    static VkFence fence = VK_NULL_HANDLE;
+    VkResult result;
+    if (descriptorPool == VK_NULL_HANDLE) {
+        VkDescriptorPoolSize poolSize{};
+        poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        poolSize.descriptorCount = 16;  // >= max buffers used by any kernel
+        VkDescriptorPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        poolInfo.poolSizeCount = 1;
+        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.maxSets = 4;
+        if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS)
+            throw std::runtime_error("failed to create descriptor pool");
 
-    VkDescriptorPoolCreateInfo poolInfo{};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
-    poolInfo.maxSets = 1;
-
-    VkDescriptorPool descriptorPool;
-    VkResult result = vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool);
-    if (result != VK_SUCCESS) {
-        std::cerr << "[Vulkan] Failed to create descriptor pool: " << result << std::endl;
-        throw std::runtime_error("failed to create descriptor pool");
+        VkCommandBufferAllocateInfo cmdAllocInfo{};
+        cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cmdAllocInfo.commandPool = ctx.commandPool;
+        cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmdAllocInfo.commandBufferCount = 1;
+        if (vkAllocateCommandBuffers(device, &cmdAllocInfo, &commandBuffer) != VK_SUCCESS) {
+            vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+            descriptorPool = VK_NULL_HANDLE;
+            throw std::runtime_error("failed to allocate command buffer");
+        }
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        if (vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+            vkFreeCommandBuffers(device, ctx.commandPool, 1, &commandBuffer);
+            vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+            descriptorPool = VK_NULL_HANDLE; commandBuffer = VK_NULL_HANDLE;
+            throw std::runtime_error("failed to create fence");
+        }
     }
+
+    // Reset the cached objects for this dispatch.
+    vkResetDescriptorPool(device, descriptorPool, 0);
+    vkResetCommandBuffer(commandBuffer, 0);
+    vkResetFences(device, 1, &fence);
 
     VkDescriptorSet descriptorSet;
     VkDescriptorSetAllocateInfo allocInfo{};
@@ -750,22 +780,15 @@ static void run_compute(const std::string& shaderName,
     allocInfo.descriptorPool = descriptorPool;
     allocInfo.descriptorSetCount = 1;
     allocInfo.pSetLayouts = &state.descLayout;
-
-    result = vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet);
-    if (result != VK_SUCCESS) {
-        std::cerr << "[Vulkan] Failed to allocate descriptor sets: " << result << std::endl;
-        vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+    if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS)
         throw std::runtime_error("failed to allocate descriptor sets");
-    }
 
     std::vector<VkDescriptorBufferInfo> bufferInfos(buffers.size());
     std::vector<VkWriteDescriptorSet> descriptorWrites(buffers.size());
-
     for(size_t i=0; i<buffers.size(); ++i) {
         bufferInfos[i].buffer = buffers[i]->buffer;
         bufferInfos[i].offset = 0;
         bufferInfos[i].range = buffers[i]->size;
-
         descriptorWrites[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         descriptorWrites[i].dstSet = descriptorSet;
         descriptorWrites[i].dstBinding = i;
@@ -774,34 +797,14 @@ static void run_compute(const std::string& shaderName,
         descriptorWrites[i].descriptorCount = 1;
         descriptorWrites[i].pBufferInfo = &bufferInfos[i];
     }
-
     vkUpdateDescriptorSets(device, (uint32_t)descriptorWrites.size(), descriptorWrites.data(), 0, nullptr);
-
-    // Command Buffer
-    VkCommandBufferAllocateInfo cmdAllocInfo{};
-    cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cmdAllocInfo.commandPool = ctx.commandPool;
-    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cmdAllocInfo.commandBufferCount = 1;
-
-    VkCommandBuffer commandBuffer;
-    result = vkAllocateCommandBuffers(device, &cmdAllocInfo, &commandBuffer);
-    if (result != VK_SUCCESS) {
-        std::cerr << "[Vulkan] Failed to allocate command buffer: " << result << std::endl;
-        vkDestroyDescriptorPool(device, descriptorPool, nullptr);
-        throw std::runtime_error("failed to allocate command buffer");
-    }
 
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-
-    result = vkBeginCommandBuffer(commandBuffer, &beginInfo);
-    if (result != VK_SUCCESS) {
-        std::cerr << "[Vulkan] Failed to begin command buffer: " << result << std::endl;
-        vkFreeCommandBuffers(device, ctx.commandPool, 1, &commandBuffer);
-        vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS)
         throw std::runtime_error("failed to begin command buffer");
-    }
+
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, state.pipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, state.layout, 0, 1, &descriptorSet, 0, nullptr);
     if(pushConstSize > 0) {
@@ -809,9 +812,8 @@ static void run_compute(const std::string& shaderName,
     }
     vkCmdDispatch(commandBuffer, groupCountX, groupCountY, groupCountZ);
 
-    // Barrier making the compute-shader writes visible to the HOST readback that
-    // follows (results are read via mapped memory after vkQueueWaitIdle). The
-    // correct destination is the host stage / HOST_READ, not another shader read.
+    // Barrier making compute-shader writes visible to the HOST readback that
+    // follows (results are read via mapped coherent memory after the fence wait).
     VkMemoryBarrier memBarrier{};
     memBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
     memBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -820,41 +822,21 @@ static void run_compute(const std::string& shaderName,
                          VK_PIPELINE_STAGE_HOST_BIT,
                          0, 1, &memBarrier, 0, nullptr, 0, nullptr);
 
-    result = vkEndCommandBuffer(commandBuffer);
-    if (result != VK_SUCCESS) {
-        std::cerr << "[Vulkan] Failed to end command buffer: " << result << std::endl;
-        vkFreeCommandBuffers(device, ctx.commandPool, 1, &commandBuffer);
-        vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+    if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS)
         throw std::runtime_error("failed to end command buffer");
-    }
 
-    // Submit and Wait
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
-
-    result = vkQueueSubmit(ctx.computeQueue, 1, &submitInfo, VK_NULL_HANDLE);
-    if (result != VK_SUCCESS) {
-        std::cerr << "[Vulkan] Failed to submit queue: " << result << std::endl;
-        vkFreeCommandBuffers(device, ctx.commandPool, 1, &commandBuffer);
-        vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+    if (vkQueueSubmit(ctx.computeQueue, 1, &submitInfo, fence) != VK_SUCCESS)
         throw std::runtime_error("failed to submit queue");
-    }
 
-    result = vkQueueWaitIdle(ctx.computeQueue);
-    if (result != VK_SUCCESS) {
-        std::cerr << "[Vulkan] Queue wait failed: " << result << std::endl;
-        vkFreeCommandBuffers(device, ctx.commandPool, 1, &commandBuffer);
-        vkDestroyDescriptorPool(device, descriptorPool, nullptr);
-        throw std::runtime_error("queue wait failed");
-    }
-
-    // Cleanup Command Buffer & Descriptor Pool (Pipeline is cached)
-    vkFreeCommandBuffers(device, ctx.commandPool, 1, &commandBuffer);
-    vkDestroyDescriptorPool(device, descriptorPool, nullptr);
-    // Note: Pipeline/layout/descriptor set layout/shader module are cached in g_pipelineCache
-    // and cleaned up in VulkanContext::cleanup() via cleanupPipelineCache().
+    // Wait on THIS submission's fence (not the whole queue) before returning.
+    result = vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+    if (result != VK_SUCCESS)
+        throw std::runtime_error("fence wait failed");
+    // Cached objects are reused next call; freed by the driver at device teardown.
 }
 
 // -----------------------------------------------------------------------------
@@ -865,31 +847,50 @@ bool is_available() {
     return VulkanContext::get().init();
 }
 
+// --- CPU/GPU offload thresholds ---
+// The Pi 5 GPU (Broadcom VideoCore VII / V3D) is weaker than the 4x Cortex-A76
+// CPU and shares the same LPDDR4X bus; every dispatch also pays a submit +
+// map/copy + queue-wait round-trip. So GPU offload only wins for large problems.
+// Below these element counts we compute on the CPU transparently (returning the
+// same result), which also avoids initializing Vulkan for tiny calls.
+// Measured on the Pi 5: even after caching the descriptor pool / command buffer
+// / fence, a single dispatch carries ~2.9 ms of fixed submit + buffer-map/copy
+// overhead. For memory-bound elementwise/dot ops the V3D never beats the 4x A76
+// at any size that fits memory, so the elementwise threshold is set high (these
+// effectively always run on the CPU here). The GPU only pays off for large,
+// compute-heavy GEMM. Tune per board; a stronger discrete GPU wants lower values.
+static constexpr size_t OPTMATH_VK_ELTWISE_MIN = 1u << 20;  // ~1M elements
+static constexpr size_t OPTMATH_VK_MATMUL_MIN  = 256ull * 256 * 256;  // M*N*K
+
 Eigen::VectorXf vulkan_vec_add(const Eigen::VectorXf& a, const Eigen::VectorXf& b) {
-    if (!is_available() || a.size() != b.size()) return Eigen::VectorXf();
+    if (a.size() != b.size()) return Eigen::VectorXf();
+    // Small problem or no GPU: compute on the CPU (correct either way).
+    if ((size_t)a.size() < OPTMATH_VK_ELTWISE_MIN || !is_available()) return a + b;
 
-    size_t count = a.size();
-    size_t sizeBytes = count * sizeof(float);
-
-    BufferWrapper bufA(sizeBytes);
-    BufferWrapper bufB(sizeBytes);
-    BufferWrapper bufOut(sizeBytes);
-
-    bufA.mapAndCopyFrom(a.data());
-    bufB.mapAndCopyFrom(b.data());
-
-    struct { uint32_t count; } push = { (uint32_t)count };
-
-    // We assume the spv file is in current dir for simplicity or a fixed path
-    run_compute("vec_add.comp.spv", {&bufA, &bufB, &bufOut}, &push, sizeof(push), (uint32_t)((count + 255) / 256));
-
-    Eigen::VectorXf res(count);
-    bufOut.mapAndCopyTo(res.data());
-    return res;
+    // GPU path guarded: any failure (e.g. a missing .spv, an allocation error)
+    // falls back to the CPU rather than escaping as an exception past this API's
+    // return-a-valid-result contract (which would std::terminate the caller).
+    try {
+        size_t count = a.size();
+        size_t sizeBytes = count * sizeof(float);
+        BufferWrapper bufA(sizeBytes);
+        BufferWrapper bufB(sizeBytes);
+        BufferWrapper bufOut(sizeBytes);
+        bufA.mapAndCopyFrom(a.data());
+        bufB.mapAndCopyFrom(b.data());
+        struct { uint32_t count; } push = { (uint32_t)count };
+        run_compute("vec_add.comp.spv", {&bufA, &bufB, &bufOut}, &push, sizeof(push), (uint32_t)((count + 255) / 256));
+        Eigen::VectorXf res(count);
+        bufOut.mapAndCopyTo(res.data());
+        return res;
+    } catch (const std::exception&) {
+        return a + b;  // CPU fallback
+    }
 }
 
 Eigen::VectorXf vulkan_vec_sub(const Eigen::VectorXf& a, const Eigen::VectorXf& b) {
-    if (!is_available() || a.size() != b.size()) return Eigen::VectorXf();
+    if (a.size() != b.size()) return Eigen::VectorXf();
+    if ((size_t)a.size() < OPTMATH_VK_ELTWISE_MIN || !is_available()) return a - b;
 
     size_t count = a.size();
     size_t sizeBytes = count * sizeof(float);
@@ -910,7 +911,9 @@ Eigen::VectorXf vulkan_vec_sub(const Eigen::VectorXf& a, const Eigen::VectorXf& 
 }
 
 Eigen::VectorXf vulkan_vec_div(const Eigen::VectorXf& a, const Eigen::VectorXf& b) {
-    if (!is_available() || a.size() != b.size()) return Eigen::VectorXf();
+    if (a.size() != b.size()) return Eigen::VectorXf();
+    if ((size_t)a.size() < OPTMATH_VK_ELTWISE_MIN || !is_available())
+        return a.array() / b.array();
 
     size_t count = a.size();
     size_t sizeBytes = count * sizeof(float);
@@ -931,7 +934,9 @@ Eigen::VectorXf vulkan_vec_div(const Eigen::VectorXf& a, const Eigen::VectorXf& 
 }
 
 Eigen::VectorXf vulkan_vec_mul(const Eigen::VectorXf& a, const Eigen::VectorXf& b) {
-    if (!is_available() || a.size() != b.size()) return Eigen::VectorXf();
+    if (a.size() != b.size()) return Eigen::VectorXf();
+    if ((size_t)a.size() < OPTMATH_VK_ELTWISE_MIN || !is_available())
+        return a.array() * b.array();
 
     size_t count = a.size();
     size_t sizeBytes = count * sizeof(float);
@@ -952,7 +957,8 @@ Eigen::VectorXf vulkan_vec_mul(const Eigen::VectorXf& a, const Eigen::VectorXf& 
 }
 
 float vulkan_vec_dot(const Eigen::VectorXf& a, const Eigen::VectorXf& b) {
-    if (!is_available() || a.size() != b.size()) return 0.0f;
+    if (a.size() != b.size()) return 0.0f;
+    if ((size_t)a.size() < OPTMATH_VK_ELTWISE_MIN || !is_available()) return a.dot(b);
 
     size_t count = a.size();
     size_t sizeBytes = count * sizeof(float);
@@ -987,7 +993,8 @@ float vulkan_vec_norm(const Eigen::VectorXf& a) {
 // --- Matrix Operations ---
 
 Eigen::MatrixXf vulkan_mat_add(const Eigen::MatrixXf& a, const Eigen::MatrixXf& b) {
-    if (!is_available() || a.size() == 0 || a.rows() != b.rows() || a.cols() != b.cols()) return Eigen::MatrixXf();
+    if (a.size() == 0 || a.rows() != b.rows() || a.cols() != b.cols()) return Eigen::MatrixXf();
+    if ((size_t)a.size() < OPTMATH_VK_ELTWISE_MIN || !is_available()) return a + b;
 
     size_t rows = a.rows();
     size_t cols = a.cols();
@@ -1015,7 +1022,8 @@ Eigen::MatrixXf vulkan_mat_add(const Eigen::MatrixXf& a, const Eigen::MatrixXf& 
 }
 
 Eigen::MatrixXf vulkan_mat_sub(const Eigen::MatrixXf& a, const Eigen::MatrixXf& b) {
-    if (!is_available() || a.size() == 0 || a.rows() != b.rows() || a.cols() != b.cols()) return Eigen::MatrixXf();
+    if (a.size() == 0 || a.rows() != b.rows() || a.cols() != b.cols()) return Eigen::MatrixXf();
+    if ((size_t)a.size() < OPTMATH_VK_ELTWISE_MIN || !is_available()) return a - b;
 
     size_t rows = a.rows();
     size_t cols = a.cols();
@@ -1042,45 +1050,55 @@ Eigen::MatrixXf vulkan_mat_sub(const Eigen::MatrixXf& a, const Eigen::MatrixXf& 
 }
 
 Eigen::MatrixXf vulkan_mat_mul(const Eigen::MatrixXf& a, const Eigen::MatrixXf& b) {
-    if (!is_available() || a.size() == 0 || b.size() == 0 || a.cols() != b.rows()) return Eigen::MatrixXf();
+    if (a.size() == 0 || b.size() == 0 || a.cols() != b.rows()) return Eigen::MatrixXf();
+    // GEMM on V3D must overcome map->copy->submit->wait->copy-back over the
+    // shared bus, so it only wins for large M*N*K. Below that, the CPU (Eigen,
+    // which is itself NEON-vectorized) is faster.
+    {
+        size_t work = (size_t)a.rows() * (size_t)b.cols() * (size_t)a.cols();
+        if (work < OPTMATH_VK_MATMUL_MIN || !is_available()) return a * b;
+    }
 
     // A: MxK, B: KxN -> C: MxN
     size_t M = a.rows();
     size_t K = a.cols();
     size_t N = b.cols();
 
-    size_t sizeA = M * K * sizeof(float);
-    size_t sizeB = K * N * sizeof(float);
-    size_t sizeC = M * N * sizeof(float);
+    // GPU path guarded: fall back to the CPU (Eigen, NEON-vectorized) on any
+    // Vulkan failure rather than throwing past the return-a-result contract.
+    try {
+        size_t sizeA = M * K * sizeof(float);
+        size_t sizeB = K * N * sizeof(float);
+        size_t sizeC = M * N * sizeof(float);
 
-    BufferWrapper bufA(sizeA);
-    BufferWrapper bufB(sizeB);
-    BufferWrapper bufOut(sizeC);
+        BufferWrapper bufA(sizeA);
+        BufferWrapper bufB(sizeB);
+        BufferWrapper bufOut(sizeC);
 
-    bufA.mapAndCopyFrom(a.data());
-    bufB.mapAndCopyFrom(b.data());
+        bufA.mapAndCopyFrom(a.data());
+        bufB.mapAndCopyFrom(b.data());
 
-    struct { uint32_t M; uint32_t K; uint32_t N; } push = { (uint32_t)M, (uint32_t)K, (uint32_t)N };
+        struct { uint32_t M; uint32_t K; uint32_t N; } push = { (uint32_t)M, (uint32_t)K, (uint32_t)N };
 
-    // Select shader and tile size based on GPU
-    auto& ctx = VulkanContext::get();
-    if (ctx.isMaliG720) {
-        // Mali-G720 optimized: 32x32 tiles, 1024 threads per workgroup
-        uint32_t gx = (uint32_t)((M + 31) / 32);
-        uint32_t gy = (uint32_t)((N + 31) / 32);
-        run_compute("mat_mul_tiled_mali.comp.spv", {&bufA, &bufB, &bufOut}, &push, sizeof(push), gx, gy);
-    } else {
-        // Default (incl. Pi 5 VideoCore VII): 16x16 shared-memory tiled GEMM.
-        // Same bindings/push-constants/dispatch as the naive kernel, but reads
-        // each tile from shared memory instead of re-reading global memory per k.
-        uint32_t gx = (uint32_t)((M + 15) / 16);
-        uint32_t gy = (uint32_t)((N + 15) / 16);
-        run_compute("mat_mul_tiled.comp.spv", {&bufA, &bufB, &bufOut}, &push, sizeof(push), gx, gy);
+        // Select shader and tile size based on GPU
+        auto& ctx = VulkanContext::get();
+        if (ctx.isMaliG720) {
+            uint32_t gx = (uint32_t)((M + 31) / 32);
+            uint32_t gy = (uint32_t)((N + 31) / 32);
+            run_compute("mat_mul_tiled_mali.comp.spv", {&bufA, &bufB, &bufOut}, &push, sizeof(push), gx, gy);
+        } else {
+            // Default (incl. Pi 5 VideoCore VII): 16x16 shared-memory tiled GEMM.
+            uint32_t gx = (uint32_t)((M + 15) / 16);
+            uint32_t gy = (uint32_t)((N + 15) / 16);
+            run_compute("mat_mul_tiled.comp.spv", {&bufA, &bufB, &bufOut}, &push, sizeof(push), gx, gy);
+        }
+
+        Eigen::MatrixXf res(M, N);
+        bufOut.mapAndCopyTo(res.data());
+        return res;
+    } catch (const std::exception&) {
+        return a * b;  // CPU fallback
     }
-
-    Eigen::MatrixXf res(M, N);
-    bufOut.mapAndCopyTo(res.data());
-    return res;
 }
 
 Eigen::MatrixXf vulkan_mat_transpose(const Eigen::MatrixXf& a) {

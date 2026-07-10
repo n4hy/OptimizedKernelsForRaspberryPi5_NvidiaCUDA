@@ -50,6 +50,7 @@
 #include <algorithm>
 #include <vector>
 #include <utility>
+#include <limits>
 
 #ifdef OPTMATH_USE_NEON
 #include <arm_neon.h>
@@ -473,6 +474,12 @@ int neon_solve_spd_f32(float* A, float* b, std::size_t n, std::size_t lda) {
 
 int neon_inverse_f32(float* Ainv, const float* A, std::size_t n,
                       std::size_t lda, std::size_t ldinv) {
+    // Guard n*n against size_t overflow before allocating the workspace.
+    // (On 64-bit this only bites at absurd n, but fail cleanly rather than
+    // wrap-around into an under-sized buffer on any 32-bit target.)
+    if (n != 0 && n > std::numeric_limits<std::size_t>::max() / n) {
+        return -1;  // size overflow: treat as failure
+    }
     // Copy A into workspace
     std::vector<float> LU(n * n);
     for (std::size_t j = 0; j < n; ++j) {

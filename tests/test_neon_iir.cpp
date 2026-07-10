@@ -269,6 +269,32 @@ TEST(NeonBiquadTest, InPlaceProcessing) {
     }
 }
 
+TEST(NeonBiquadTest, X4MatchesScalarPerChannel) {
+    const std::size_t n = 4096;
+    float fs = 48000.0f;
+    BiquadCoeffs co[4] = {
+        neon_biquad_lowpass(1000.0f, fs, 0.7f),
+        neon_biquad_highpass(2000.0f, fs, 0.9f),
+        neon_biquad_bandpass(3000.0f, fs, 1.5f),
+        neon_biquad_notch(5000.0f, fs, 2.0f),
+    };
+    std::vector<float> chin[4], ref[4], inter(4 * n), outer(4 * n);
+    for (int c = 0; c < 4; ++c) { chin[c].resize(n); ref[c].resize(n); }
+    for (std::size_t i = 0; i < n; ++i)
+        for (int c = 0; c < 4; ++c) {
+            float v = std::sin(0.01f * i * (c + 1)) + 0.3f * std::cos(0.13f * i);
+            chin[c][i] = v; inter[4 * i + c] = v;
+        }
+    for (int c = 0; c < 4; ++c) { BiquadState st{}; neon_biquad_f32(ref[c].data(), chin[c].data(), n, co[c], st); }
+
+    BiquadState st4[4] = {};
+    neon_biquad_x4_f32(outer.data(), inter.data(), n, co, st4);
+
+    for (std::size_t i = 0; i < n; ++i)
+        for (int c = 0; c < 4; ++c)
+            EXPECT_NEAR(outer[4 * i + c], ref[c][i], 1e-4f) << "ch " << c << " idx " << i;
+}
+
 TEST(NeonBiquadTest, EigenWrapper) {
     if (!is_available()) {
         GTEST_SKIP() << "NEON not available";

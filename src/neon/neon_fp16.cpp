@@ -80,6 +80,11 @@ float neon_dot_f16(const __fp16* a, const __fp16* b, std::size_t n) {
     return sum;
 }
 
+// fp16 GEMM/GEMV intentionally omitted: on the Cortex-A76 (no FEAT_FHM) the
+// mandatory vcvt widening makes fp16-with-fp32-accumulation slower than the
+// fp32 FMA GEMM. See the note in neon_fp16.hpp. Use the int8 SDOT GEMM
+// (neon_int8.hpp) for a genuine quantized-matmul speedup.
+
 } // namespace neon
 } // namespace optmath
 
