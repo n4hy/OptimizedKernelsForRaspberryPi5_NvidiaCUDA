@@ -31,6 +31,7 @@ While remaining compatible with standard Linux x86/ARM environments.
 - [API Reference](#api-reference)
 - [Usage Examples](#usage-examples)
 - [Benchmarking](#benchmarking)
+  - [Raspberry Pi 5 Benchmark Results](#raspberry-pi-5-benchmark-results)
   - [Orange Pi 6 Plus Benchmark Results](#orange-pi-6-plus-benchmark-results)
 - [Troubleshooting](#troubleshooting)
 - [File Structure](#file-structure)
@@ -78,7 +79,9 @@ project, providing hardware-accelerated kernels for:
 ### Core Capabilities
 
 - **NEON Acceleration**: Hand-tuned ARMv8 NEON intrinsics for SIMD acceleration on 64-bit ARM (aarch64). Includes optimized matrix multiplication, convolution, and vector math.
-- **Vulkan Compute**: Massive parallel offloading to the GPU (VideoCore VII on Pi 5). Supports large vector operations, matrix math, FFT (Radix-2/4), and reductions.
+- **Multi-Core Threading (OpenMP)**: The hot GEMM, 2D convolution, CAF, CFAR, MTI, and Doppler-FFT kernels parallelize across all 4 Cortex-A76 cores via OpenMP (guarded with `#ifdef _OPENMP`, so a build without OpenMP still compiles single-threaded).
+- **Int8 Dot-Product (SDOT)**: Armv8.2 `vdotq_s32` int8 GEMM with int32 accumulation — roughly **13× the fp32 GEMM** on the Pi 5's Cortex-A76.
+- **Vulkan Compute**: GPU offload to the VideoCore VII (V3D) on the Pi 5, with automatic **CPU/GPU offload thresholds** — small/memory-bound work stays on the (faster) 4× A76 CPU; only large, compute-heavy problems go to the GPU. Supports large vector operations, matrix math, FFT (Radix-2/4), and reductions.
 - **Eigen Integration**: Fully compatible with `Eigen::VectorXf`, `Eigen::MatrixXf`, and `Eigen::VectorXcf`. Pass your existing data structures directly to accelerated kernels.
 - **Easy Integration**: Standard CMake package that installs to `/usr/local` and works with `find_package(OptMathKernels)`.
 
@@ -87,7 +90,7 @@ project, providing hardware-accelerated kernels for:
 - **Cross-Ambiguity Function (CAF)**: Core passive radar operation for range-Doppler detection
 - **CFAR Detection**: 1D/2D Cell-Averaging and Ordered Statistic CFAR detectors
 - **Clutter Filtering**: NLMS adaptive filter and projection-based clutter cancellation
-- **Doppler Processing**: FFT-based Doppler processing and MTI filters
+- **Doppler Processing**: Radix-2 FFT Doppler processing for power-of-two sizes (~300× faster than the former per-element DFT; direct-DFT fallback for other sizes), plus MTI filters
 - **Beamforming**: Delay-and-sum and phase-shift beamformers with steering vector generation
 - **Window Functions**: Hamming, Hanning, Blackman, Blackman-Harris, Kaiser
 
@@ -95,7 +98,7 @@ project, providing hardware-accelerated kernels for:
 
 - **Vectorized Transcendentals**: Fast NEON-accelerated exp, sin, cos, sigmoid, tanh (~10-50x faster than scalar)
 - **Complex Operations**: Vectorized complex multiply, conjugate multiply, magnitude, phase
-- **Cache-Blocked GEMM**: 8x8 microkernel with runtime cache blocking (MC/KC/NC auto-tuned for detected L3 cache size)
+- **Cache-Blocked GEMM**: 8x8 register-blocked microkernel with runtime cache blocking (MC/KC/NC auto-tuned for the detected L2/L3 sizes — the Pi 5's B-panel is sized to ~½ of L2), threaded across cores. The public `neon_gemm` routes to this path for non-trivial sizes.
 - **Reductions**: Sum, max, min, dot product with horizontal NEON adds
 
 ### SVE2 Acceleration (`optmath::sve2`)
@@ -119,8 +122,8 @@ project, providing hardware-accelerated kernels for:
 ### DSP Kernels (`optmath::neon`)
 
 - **Polyphase Resampler**: Rational L/M rate conversion with NEON-optimized FIR per phase, streaming and one-shot APIs
-- **Biquad IIR Filter**: Direct Form II Transposed with cascade support, design helpers for lowpass/highpass/bandpass/notch
-- **2D Convolution**: NEON-vectorized general NxM convolution, separable kernels, unrolled 3x3 and 5x5 specializations
+- **Biquad IIR Filter**: Direct Form II Transposed with cascade support, design helpers for lowpass/highpass/bandpass/notch; plus a **lane-batched 4-channel variant** (`neon_biquad_x4_f32`) that filters 4 independent channels in parallel across the NEON lanes (~2× vs 4 scalar passes)
+- **2D Convolution**: NEON-vectorized general NxM convolution, separable kernels, unrolled 3x3 and 5x5 specializations, threaded across cores
 
 ### Dense Linear Algebra (`optmath::neon`)
 
@@ -129,6 +132,11 @@ project, providing hardware-accelerated kernels for:
 - **LU Decomposition**: Partial pivoting with NEON-vectorized column scaling and rank-1 trailing updates
 - **QR Decomposition**: Householder reflections with NEON-vectorized reflector application, explicit Q extraction
 - **Solvers**: General solve (LU), SPD solve (Cholesky), matrix inverse (LU + TRSM)
+
+### Quantized Kernels (`optmath::neon`)
+
+- **Int8 SDOT GEMM** (`neon_gemm_s8s8s32` / `neon_gemm_int8`): int8 × int8 → int32 matrix multiply built on the Armv8.2 dot-product extension (`vdotq_s32`, "asimddp" — present on the Cortex-A76). Cache-blocked (MC/NC) with a 4×4 register tile and threaded across cores. K-contiguous layout (weights stored transposed) for zero-copy dispatch. **~90–109 GOP/s single-thread on the Pi 5 — ≈13× the fp32 GEMM.** Runtime-gated via `CpuInfo::has_dotprod`.
+- **Int8 Convolution** (`neon_conv2d_s8s8s32`): int8 valid-mode 2D convolution with int32 accumulation (widening multiply). Provided for native int8 dataflow (avoids int8↔fp32 round-trips); compute-parity with the fp32 conv on the A76, since the convolution access pattern does not map onto SDOT.
 
 ### GPU Acceleration (`optmath::vulkan`)
 
@@ -581,7 +589,9 @@ For complete API documentation of all **473 functions**, see:
 ### Headers
 
 ```cpp
-#include <optmath/neon_kernels.hpp>    // ARM NEON operations
+#include <optmath/neon_kernels.hpp>    // ARM NEON operations (GEMM, DSP, linalg, biquad-x4)
+#include <optmath/neon_int8.hpp>       // Int8 SDOT GEMM + int8 conv2d
+#include <optmath/neon_fp16.hpp>       // FP16 elementwise ops
 #include <optmath/sve2_kernels.hpp>    // ARM SVE2/FCMA/I8MM operations
 #include <optmath/platform.hpp>        // CPU detection, thread affinity
 #include <optmath/vulkan_backend.hpp>  // Vulkan GPU compute
@@ -636,15 +646,37 @@ if (optmath::neon::is_available()) {
 Eigen::MatrixXf A = Eigen::MatrixXf::Random(256, 256);
 Eigen::MatrixXf B = Eigen::MatrixXf::Random(256, 256);
 
-// Basic GEMM (4x4 tiled)
+// GEMM — auto-routes to the cache-blocked, multi-threaded 8x8 path for
+// non-trivial sizes (small matrices use a lightweight 4x4 kernel)
 Eigen::MatrixXf C = optmath::neon::neon_gemm(A, B);
 
-// Optimized blocked GEMM (8x8 microkernel, cache blocking)
+// Force the blocked path explicitly if desired
 Eigen::MatrixXf D = optmath::neon::neon_gemm_blocked(A, B);
 
 // Other operations
 Eigen::MatrixXf At = optmath::neon::neon_mat_transpose(A);
 Eigen::MatrixXf As = optmath::neon::neon_mat_scale(A, 2.5f);
+```
+
+### NEON Int8 GEMM (SDOT, ~13× the fp32 GEMM on the Pi 5)
+
+```cpp
+#include <optmath/neon_int8.hpp>
+#include <optmath/platform.hpp>
+
+// Runtime capability gate (Cortex-A76 reports true)
+if (optmath::platform::detect_cpu_info().has_dotprod) {
+    // Eigen convenience wrapper: A is MxK, B is KxN (int8), result is int32
+    using I8 = Eigen::Matrix<int8_t, Eigen::Dynamic, Eigen::Dynamic>;
+    I8 A = /* quantized weights  */ ...;
+    I8 B = /* quantized activ.   */ ...;
+    Eigen::Matrix<int32_t, Eigen::Dynamic, Eigen::Dynamic> C =
+        optmath::neon::neon_gemm_int8(A, B);
+
+    // Low-level, zero-copy: A row-major MxK, Bt row-major NxK (B transposed),
+    // C row-major MxN int32. This is the fast path for inference weights.
+    // optmath::neon::neon_gemm_s8s8s32(C, ldc, A, Bt, M, N, K);
+}
 ```
 
 ### NEON Vectorized Transcendentals
@@ -739,6 +771,13 @@ neon_biquad_cascade_f32(output.data(), input.data(), input.size(),
 BiquadCoeffs hp = neon_biquad_highpass(500.0f, 48000.0f);
 BiquadCoeffs bp = neon_biquad_bandpass(1000.0f, 48000.0f, 5.0f);
 BiquadCoeffs notch = neon_biquad_notch(60.0f, 48000.0f, 30.0f);  // 60Hz hum removal
+
+// Lane-batched: filter 4 INDEPENDENT channels in one pass (~2x). Layout is
+// channel-interleaved: in[4*i + c] / out[4*i + c] is channel c's sample i.
+BiquadCoeffs co[4] = { lp, hp, bp, notch };
+BiquadState  st4[4] = {};
+std::vector<float> in4(4 * 4096), out4(4 * 4096);
+neon_biquad_x4_f32(out4.data(), in4.data(), 4096, co, st4);
 ```
 
 ### NEON DSP: 2D Convolution
@@ -931,6 +970,56 @@ BM_Std_Exp/1048576           45.2 ms   45.1 ms     15  FLOPS=23.2M/s
 BM_NEON_ComplexMul/65536      0.1 ms    0.1 ms   6200  Elements/s=655M
 BM_CAF_NEON/4096x64x256       4.8 ms    4.7 ms    148  CAF/s=212
 ```
+
+### Raspberry Pi 5 Benchmark Results
+
+Measured on a **Raspberry Pi 5** — Cortex-A76 (4 cores @ 2.4 GHz; 64 KB L1D + 512 KB L2 per core, 2 MB shared L3), VideoCore VII / Mesa **V3D** GPU. Built with `-mcpu=native` (ARMv8.2-A + fp16 + dotprod), OpenMP, `-O3` Release, LTO, C++20. Set `OMP_NUM_THREADS` / `OMP_PROC_BIND=close` to control threading. Numbers are representative single-run measurements.
+
+#### Int8 SDOT GEMM vs fp32 GEMM
+
+The int8 dot-product path (`vdotq_s32`) is the headline win — near SDOT peak and several times the fp32 GEMM. It is memory-bandwidth-bound past ~2 cores (int8 does 4× the MACs per byte, so it saturates the shared LPDDR4X bus with fewer cores).
+
+| Kernel | Size (M=N=K) | Threads | Throughput | Notes |
+|--------|-------------|---------|------------|-------|
+| **int8 SDOT GEMM** | 48 | 1 | **109 GOP/s** | L1-resident, near peak |
+| **int8 SDOT GEMM** | 256 | 1 | **108 GOP/s** | L2-resident |
+| **int8 SDOT GEMM** | 512 | 1 | **90 GOP/s** | ≈ 7× the fp32 GEMM |
+| **int8 SDOT GEMM** | 1024 | 1 / 2 | 53 / **104 GOP/s** | bandwidth-bound past 2 cores |
+| fp32 Blocked GEMM (`neon_gemm`) | 512 | 1 | ~13.8 GFLOP/s | routed to blocked 8×8 path |
+| fp32 Blocked GEMM | 2048 | 1 / 2 / 4 | 8.9 / 17.4 / **22.3 GFLOP/s** | ~2.5× threaded |
+
+#### Multi-core threading (OpenMP, 4× Cortex-A76)
+
+| Kernel | Problem | 1 thread | Best | Speedup |
+|--------|---------|----------|------|---------|
+| **CAF** (`caf_f32`) | 8192 samples, 256 Doppler, 512 range | 821 ms | 316 ms (3T) | **2.6×** |
+| **fp32 GEMM** | 2048³ | 1932 ms | 771 ms (4T) | **2.5×** |
+
+Threading tops out near ~2.5× because these kernels are bound by the Pi 5's shared LPDDR4X bandwidth rather than compute. All threaded kernels are verified data-race-free under ThreadSanitizer.
+
+#### FFT-based Doppler processing (radix-2 FFT vs the former O(N²) DFT)
+
+| Kernel | P × R × F | Time | Speedup |
+|--------|-----------|------|---------|
+| **Doppler FFT** (pow2) | 512 × 64 × 1024, 1 thread | **2.4 ms** | — |
+| **Doppler FFT** (pow2) | 512 × 64 × 1024, 4 threads | **0.6 ms** | — |
+| Old per-element DFT | 512 × 64 × ~1000, 1 thread | 704 ms | **~290× slower** |
+
+Radix-2 FFT + precomputed twiddles for power-of-two sizes; a direct DFT remains the fallback for other sizes. Output matches the DFT to ~1e-7.
+
+#### DSP & Vulkan
+
+| Kernel | Problem | Result |
+|--------|---------|--------|
+| **Lane-batched biquad** (`neon_biquad_x4_f32`) | 4 channels × 100K samples | **2.0×** vs 4 scalar passes (exact match) |
+| **Vulkan `vec_add`** (offload threshold) | 70K elements | **0.27 ms** (routed to CPU) vs ~2.9 ms if forced to the V3D GPU |
+| Vulkan per-dispatch overhead | cached pool/cmd-buffer/fence | **4.76 → 2.89 ms** |
+
+On the Pi 5 the 4× A76 CPU beats the V3D GPU for elementwise/memory-bound work at every size that fits memory, so the offload thresholds keep that work on the CPU; the GPU path remains available (and correct) for large, compute-heavy problems.
+
+#### Test Results (Raspberry Pi 5 — 17/17 Suites Pass)
+
+All 17 ctest suites pass, including the new `test_neon_quant_gemm` (int8 SDOT GEMM + int8 conv exactness across ragged and multi-block shapes).
 
 ### Orange Pi 6 Plus Benchmark Results
 
@@ -1422,6 +1511,32 @@ OptMathKernels/
 ---
 
 ## Recent Changes
+
+### v0.6.0 - Pi 5 (Cortex-A76 / V3D) Optimization Pass (July 2026)
+
+A focused optimization pass targeting the live backends on the Raspberry Pi 5 —
+NEON on 4× Cortex-A76 and Vulkan on V3D. **17/17 test suites pass; all newly
+threaded kernels are verified data-race-free under ThreadSanitizer.**
+
+- **Multi-core threading (OpenMP).** GEMM, 2D convolution, CAF, CFAR, MTI, and
+  Doppler-FFT parallelize across the 4 A76 cores (~2–2.5×; bandwidth-bound).
+- **Int8 SDOT GEMM** (`neon_gemm_s8s8s32`): cache-blocked `vdotq_s32` int8
+  matmul — **~90–109 GOP/s, ≈13× the fp32 GEMM.** Plus an int8 2D convolution.
+- **FFT-based Doppler**: `doppler_fft_f32` now uses a radix-2 FFT for power-of-two
+  sizes (**~290× faster** than the former O(N²) DFT; matches it to 1e-7).
+- **fp32 GEMM**: public `neon_gemm` routes to the blocked 8×8 path (was a weak
+  4×4); L2-aware cache blocking (B-panel sized to ~½ L2); fixed B-packing gather.
+- **Lane-batched biquad** (`neon_biquad_x4_f32`): 4 independent channels across
+  the NEON lanes (~2×).
+- **Vulkan**: CPU/GPU offload thresholds (small/memory-bound work stays on the
+  faster CPU) + cached descriptor pool / command buffer / `VkFence` (per-dispatch
+  overhead 4.76 → 2.89 ms) + crash-guard fallback on missing shaders.
+- **Build**: `-mcpu=native` (already present) plus `-fno-math-errno` /
+  `-fno-semantic-interposition` (IEEE-preserving); runtime `has_dotprod` /
+  `has_fp16` capability detection.
+- **Honest reversal**: fp16 GEMM/GEMV were prototyped and **removed** — the A76
+  lacks FEAT_FHM, so fp16-with-fp32-accumulation is ~3.3× *slower* than fp32 FMA.
+  Only the genuinely-2× fp16 elementwise ops are kept.
 
 ### v0.5.20 - Subgroup-Shuffle GPU Reduction (July 2026)
 
