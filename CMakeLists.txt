@@ -42,12 +42,20 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 include(GNUInstallDirs)
 
 # Options
+# CUDA defaults OFF on ARM (no NVIDIA GPU on a Pi 5 / Orange Pi) to skip the
+# check_language(CUDA) probe at configure time; override with -DENABLE_CUDA=ON.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "arm")
+    set(OPTMATH_CUDA_DEFAULT OFF)
+else()
+    set(OPTMATH_CUDA_DEFAULT ON)
+endif()
+
 option(ENABLE_NEON      "Enable NEON-optimized kernels"     ON)
 option(ENABLE_SVE2      "Enable SVE2-optimized kernels"     ON)
 option(ENABLE_FCMA      "Enable FCMA complex multiply"      ON)
 option(ENABLE_I8MM      "Enable I8MM int8 matrix multiply"  ON)
 option(ENABLE_VULKAN    "Enable Vulkan-based kernels"       ON)
-option(ENABLE_CUDA      "Enable NVIDIA CUDA-based kernels"  ON)
+option(ENABLE_CUDA      "Enable NVIDIA CUDA-based kernels"  ${OPTMATH_CUDA_DEFAULT})
 option(BUILD_EXAMPLES   "Build examples"                    ON)
 option(BUILD_TESTS      "Build tests"                       ON)
 option(BUILD_BENCHMARKS "Build benchmarks"                  OFF)

@@ -889,6 +889,7 @@ Eigen::VectorXf vulkan_vec_add(const Eigen::VectorXf& a, const Eigen::VectorXf& 
 }
 
 Eigen::VectorXf vulkan_vec_sub(const Eigen::VectorXf& a, const Eigen::VectorXf& b) {
+    try {
     if (a.size() != b.size()) return Eigen::VectorXf();
     if ((size_t)a.size() < OPTMATH_VK_ELTWISE_MIN || !is_available()) return a - b;
 
@@ -908,9 +909,11 @@ Eigen::VectorXf vulkan_vec_sub(const Eigen::VectorXf& a, const Eigen::VectorXf& 
     Eigen::VectorXf res(count);
     bufOut.mapAndCopyTo(res.data());
     return res;
+    } catch (const std::exception&) { return Eigen::VectorXf(); }
 }
 
 Eigen::VectorXf vulkan_vec_div(const Eigen::VectorXf& a, const Eigen::VectorXf& b) {
+    try {
     if (a.size() != b.size()) return Eigen::VectorXf();
     if ((size_t)a.size() < OPTMATH_VK_ELTWISE_MIN || !is_available())
         return a.array() / b.array();
@@ -931,9 +934,11 @@ Eigen::VectorXf vulkan_vec_div(const Eigen::VectorXf& a, const Eigen::VectorXf& 
     Eigen::VectorXf res(count);
     bufOut.mapAndCopyTo(res.data());
     return res;
+    } catch (const std::exception&) { return Eigen::VectorXf(); }
 }
 
 Eigen::VectorXf vulkan_vec_mul(const Eigen::VectorXf& a, const Eigen::VectorXf& b) {
+    try {
     if (a.size() != b.size()) return Eigen::VectorXf();
     if ((size_t)a.size() < OPTMATH_VK_ELTWISE_MIN || !is_available())
         return a.array() * b.array();
@@ -954,9 +959,11 @@ Eigen::VectorXf vulkan_vec_mul(const Eigen::VectorXf& a, const Eigen::VectorXf& 
     Eigen::VectorXf res(count);
     bufOut.mapAndCopyTo(res.data());
     return res;
+    } catch (const std::exception&) { return Eigen::VectorXf(); }
 }
 
 float vulkan_vec_dot(const Eigen::VectorXf& a, const Eigen::VectorXf& b) {
+    try {
     if (a.size() != b.size()) return 0.0f;
     if ((size_t)a.size() < OPTMATH_VK_ELTWISE_MIN || !is_available()) return a.dot(b);
 
@@ -980,19 +987,23 @@ float vulkan_vec_dot(const Eigen::VectorXf& a, const Eigen::VectorXf& b) {
     float sum = 0.0f;
     for (float v : partials) sum += v;
     return sum;
+    } catch (const std::exception&) { return 0.0f; }
 }
 
 float vulkan_vec_norm(const Eigen::VectorXf& a) {
+    try {
     if (!is_available() || a.size() == 0) return 0.0f;
     // ||a|| = sqrt(a . a). Reuse the reduction-based dot kernel instead of
     // writing N squares to global memory and summing them on the CPU (the old
     // path was memory-bandwidth bound and slower than a single dot).
     return std::sqrt(vulkan_vec_dot(a, a));
+    } catch (const std::exception&) { return 0.0f; }
 }
 
 // --- Matrix Operations ---
 
 Eigen::MatrixXf vulkan_mat_add(const Eigen::MatrixXf& a, const Eigen::MatrixXf& b) {
+    try {
     if (a.size() == 0 || a.rows() != b.rows() || a.cols() != b.cols()) return Eigen::MatrixXf();
     if ((size_t)a.size() < OPTMATH_VK_ELTWISE_MIN || !is_available()) return a + b;
 
@@ -1019,9 +1030,11 @@ Eigen::MatrixXf vulkan_mat_add(const Eigen::MatrixXf& a, const Eigen::MatrixXf& 
     Eigen::MatrixXf res(rows, cols);
     bufOut.mapAndCopyTo(res.data());
     return res;
+    } catch (const std::exception&) { return Eigen::MatrixXf(); }
 }
 
 Eigen::MatrixXf vulkan_mat_sub(const Eigen::MatrixXf& a, const Eigen::MatrixXf& b) {
+    try {
     if (a.size() == 0 || a.rows() != b.rows() || a.cols() != b.cols()) return Eigen::MatrixXf();
     if ((size_t)a.size() < OPTMATH_VK_ELTWISE_MIN || !is_available()) return a - b;
 
@@ -1047,6 +1060,7 @@ Eigen::MatrixXf vulkan_mat_sub(const Eigen::MatrixXf& a, const Eigen::MatrixXf& 
     Eigen::MatrixXf res(rows, cols);
     bufOut.mapAndCopyTo(res.data());
     return res;
+    } catch (const std::exception&) { return Eigen::MatrixXf(); }
 }
 
 Eigen::MatrixXf vulkan_mat_mul(const Eigen::MatrixXf& a, const Eigen::MatrixXf& b) {
@@ -1102,6 +1116,7 @@ Eigen::MatrixXf vulkan_mat_mul(const Eigen::MatrixXf& a, const Eigen::MatrixXf& 
 }
 
 Eigen::MatrixXf vulkan_mat_transpose(const Eigen::MatrixXf& a) {
+    try {
     if (!is_available() || a.size() == 0) return Eigen::MatrixXf();
 
     size_t rows = a.rows();
@@ -1125,9 +1140,11 @@ Eigen::MatrixXf vulkan_mat_transpose(const Eigen::MatrixXf& a) {
     Eigen::MatrixXf res(cols, rows);
     bufOut.mapAndCopyTo(res.data());
     return res;
+    } catch (const std::exception&) { return Eigen::MatrixXf(); }
 }
 
 Eigen::MatrixXf vulkan_mat_scale(const Eigen::MatrixXf& a, float scalar) {
+    try {
     if (!is_available() || a.size() == 0) return Eigen::MatrixXf();
 
     size_t rows = a.rows();
@@ -1150,9 +1167,11 @@ Eigen::MatrixXf vulkan_mat_scale(const Eigen::MatrixXf& a, float scalar) {
     Eigen::MatrixXf res(rows, cols);
     bufOut.mapAndCopyTo(res.data());
     return res;
+    } catch (const std::exception&) { return Eigen::MatrixXf(); }
 }
 
 Eigen::VectorXf vulkan_mat_vec_mul(const Eigen::MatrixXf& a, const Eigen::VectorXf& v) {
+    try {
     if (!is_available() || a.size() == 0 || v.size() == 0 || a.cols() != v.size()) return Eigen::VectorXf();
 
     size_t rows = a.rows();
@@ -1177,9 +1196,11 @@ Eigen::VectorXf vulkan_mat_vec_mul(const Eigen::MatrixXf& a, const Eigen::Vector
     Eigen::VectorXf res(rows);
     bufOut.mapAndCopyTo(res.data());
     return res;
+    } catch (const std::exception&) { return Eigen::VectorXf(); }
 }
 
 Eigen::MatrixXf vulkan_mat_outer_product(const Eigen::VectorXf& u, const Eigen::VectorXf& v) {
+    try {
     if (!is_available() || u.size() == 0 || v.size() == 0) return Eigen::MatrixXf();
 
     size_t M = u.size(); // Rows
@@ -1205,9 +1226,11 @@ Eigen::MatrixXf vulkan_mat_outer_product(const Eigen::VectorXf& u, const Eigen::
     Eigen::MatrixXf res(M, N);
     bufOut.mapAndCopyTo(res.data());
     return res;
+    } catch (const std::exception&) { return Eigen::MatrixXf(); }
 }
 
 Eigen::MatrixXf vulkan_mat_elementwise_mul(const Eigen::MatrixXf& a, const Eigen::MatrixXf& b) {
+    try {
     if (!is_available() || a.size() == 0 || a.rows() != b.rows() || a.cols() != b.cols()) return Eigen::MatrixXf();
 
     size_t rows = a.rows();
@@ -1232,9 +1255,11 @@ Eigen::MatrixXf vulkan_mat_elementwise_mul(const Eigen::MatrixXf& a, const Eigen
     Eigen::MatrixXf res(rows, cols);
     bufOut.mapAndCopyTo(res.data());
     return res;
+    } catch (const std::exception&) { return Eigen::MatrixXf(); }
 }
 
 Eigen::VectorXf vulkan_convolution_1d(const Eigen::VectorXf& x, const Eigen::VectorXf& k) {
+    try {
     if (!is_available() || k.size() == 0 || x.size() < k.size()) return Eigen::VectorXf();
 
     size_t n_x = x.size();
@@ -1255,9 +1280,11 @@ Eigen::VectorXf vulkan_convolution_1d(const Eigen::VectorXf& x, const Eigen::Vec
     Eigen::VectorXf res(n_y);
     bufY.mapAndCopyTo(res.data());
     return res;
+    } catch (const std::exception&) { return Eigen::VectorXf(); }
 }
 
 Eigen::MatrixXf vulkan_convolution_2d(const Eigen::MatrixXf& x, const Eigen::MatrixXf& k) {
+    try {
     if (!is_available() || k.size() == 0 || x.rows() < k.rows() || x.cols() < k.cols()) return Eigen::MatrixXf();
 
     size_t H_in = x.rows();
@@ -1291,9 +1318,11 @@ Eigen::MatrixXf vulkan_convolution_2d(const Eigen::MatrixXf& x, const Eigen::Mat
     Eigen::MatrixXf res(H_out, W_out);
     bufY.mapAndCopyTo(res.data());
     return res;
+    } catch (const std::exception&) { return Eigen::MatrixXf(); }
 }
 
 Eigen::VectorXf vulkan_correlation_1d(const Eigen::VectorXf& x, const Eigen::VectorXf& k) {
+    try {
     if (!is_available() || k.size() == 0 || x.size() < k.size()) return Eigen::VectorXf();
 
     size_t n_x = x.size();
@@ -1313,9 +1342,11 @@ Eigen::VectorXf vulkan_correlation_1d(const Eigen::VectorXf& x, const Eigen::Vec
     Eigen::VectorXf res(n_y);
     bufY.mapAndCopyTo(res.data());
     return res;
+    } catch (const std::exception&) { return Eigen::VectorXf(); }
 }
 
 Eigen::MatrixXf vulkan_correlation_2d(const Eigen::MatrixXf& x, const Eigen::MatrixXf& k) {
+    try {
     if (!is_available() || k.size() == 0 || x.rows() < k.rows() || x.cols() < k.cols()) return Eigen::MatrixXf();
 
     size_t H_in = x.rows();
@@ -1349,6 +1380,7 @@ Eigen::MatrixXf vulkan_correlation_2d(const Eigen::MatrixXf& x, const Eigen::Mat
     Eigen::MatrixXf res(H_out, W_out);
     bufY.mapAndCopyTo(res.data());
     return res;
+    } catch (const std::exception&) { return Eigen::MatrixXf(); }
 }
 
 // Helper for reduction
@@ -1384,6 +1416,7 @@ ReduceBackend get_reduce_backend() { return g_reduceBackend; }
 bool subgroup_reduce_available() { return VulkanContext::get().subgroupCanReduce; }
 
 float vulkan_reduce_sum(const Eigen::VectorXf& a) {
+    try {
     auto& ctx = VulkanContext::get();
     if (ctx.isMaliG720) {
         return run_reduction(a, "reduce_sum_mali.comp.spv", 0.0f, [](float x, float y){ return x + y; }, 1024);
@@ -1395,19 +1428,25 @@ float vulkan_reduce_sum(const Eigen::VectorXf& a) {
         (g_reduceBackend == ReduceBackend::Auto && ctx.subgroupCanReduce);
     const char* shader = useSubgroup ? "reduce_sum_subgroup.comp.spv" : "reduce_sum.comp.spv";
     return run_reduction(a, shader, 0.0f, [](float x, float y){ return x + y; });
+    } catch (const std::exception&) { return 0.0f; }
 }
 
 float vulkan_reduce_max(const Eigen::VectorXf& a) {
+    try {
     if (a.size() == 0) return 0.0f;
     return run_reduction(a, "reduce_max.comp.spv", a[0], [](float x, float y){ return std::max(x, y); });
+    } catch (const std::exception&) { return 0.0f; }
 }
 
 float vulkan_reduce_min(const Eigen::VectorXf& a) {
+    try {
     if (a.size() == 0) return 0.0f;
     return run_reduction(a, "reduce_min.comp.spv", a[0], [](float x, float y){ return std::min(x, y); });
+    } catch (const std::exception&) { return 0.0f; }
 }
 
 Eigen::VectorXf vulkan_scan_prefix_sum(const Eigen::VectorXf& a) {
+    try {
     if (!is_available() || a.size() == 0) return Eigen::VectorXf();
 
     // Note: The shader `scan_prefix_sum.comp.glsl` is a single-block scan.
@@ -1441,6 +1480,7 @@ Eigen::VectorXf vulkan_scan_prefix_sum(const Eigen::VectorXf& a) {
     Eigen::VectorXf res(count);
     bufOut.mapAndCopyTo(res.data());
     return res;
+    } catch (const std::exception&) { return Eigen::VectorXf(); }
 }
 
 // Bit reversal helper
@@ -1462,6 +1502,7 @@ static void bit_reverse_copy(const Eigen::VectorXf& in, Eigen::VectorXf& out) {
 }
 
 void vulkan_fft_radix2(Eigen::VectorXf& data, bool inverse) {
+    try {
     if (!is_available() || data.size() == 0 || (data.size() % 2 != 0)) return;
 
     // data is interleaved complex. N points -> 2*N floats.
@@ -1502,15 +1543,18 @@ void vulkan_fft_radix2(Eigen::VectorXf& data, bool inverse) {
     buf.mapAndCopyTo(data.data());
 
     // Note: follows FFTW/cuFFT convention — caller is responsible for 1/N normalization on IFFT
+    } catch (const std::exception&) { return; }
 }
 
 void vulkan_fft_radix4(Eigen::VectorXf& data, bool inverse) {
+    try {
     // The radix-4 GPU path requires base-4 digit reversal to permute its input,
     // but only base-2 bit reversal is implemented, which produces numerically
     // incorrect results. Until the base-4 permutation (and shader) are validated
     // against a golden FFT, delegate to the verified radix-2 Cooley-Tukey path,
     // which is correct for any power-of-2 size (including all powers of 4).
     vulkan_fft_radix2(data, inverse);
+    } catch (const std::exception&) { return; }
 }
 
 #else

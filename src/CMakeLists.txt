@@ -85,8 +85,6 @@ if(ENABLE_VULKAN)
             # Convolution and correlation
             convolution_1d.comp.glsl
             convolution_2d.comp.glsl
-            convolution_1d_optimized.comp.glsl
-            convolution_2d_optimized.comp.glsl
             correlation_1d.comp.glsl
             correlation_2d.comp.glsl
             # Reductions
@@ -95,11 +93,9 @@ if(ENABLE_VULKAN)
             reduce_max.comp.glsl
             reduce_min.comp.glsl
             reduce_complete.comp.glsl
-            # Scan / Prefix sum
+            # Scan / Prefix sum (single-block; the multi-block scan_local/
+            # scan_block_sums/scan_add_offsets pipeline was never wired up)
             scan_prefix_sum.comp.glsl
-            scan_local.comp.glsl
-            scan_block_sums.comp.glsl
-            scan_add_offsets.comp.glsl
             # FFT
             fft_radix2.comp.glsl
             fft_radix2_optimized.comp.glsl
