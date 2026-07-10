@@ -1514,6 +1514,8 @@ OptMathKernels/
 
 ### v0.6.0 - Pi 5 (Cortex-A76 / V3D) Optimization Pass (July 2026)
 
+📦 **Released:** [v0.6.0 on GitHub](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.6.0)
+
 A focused optimization pass targeting the live backends on the Raspberry Pi 5 —
 NEON on 4× Cortex-A76 and Vulkan on V3D. **17/17 test suites pass; all newly
 threaded kernels are verified data-race-free under ThreadSanitizer.**
@@ -1528,12 +1530,16 @@ threaded kernels are verified data-race-free under ThreadSanitizer.**
   4×4); L2-aware cache blocking (B-panel sized to ~½ L2); fixed B-packing gather.
 - **Lane-batched biquad** (`neon_biquad_x4_f32`): 4 independent channels across
   the NEON lanes (~2×).
+- **More NEON coverage**: CFAR CA reference-window sum vectorized; `neon_complex_phase`
+  now uses a vectorized NEON `atan2` (~1e-6 rad vs `std::atan2`).
 - **Vulkan**: CPU/GPU offload thresholds (small/memory-bound work stays on the
   faster CPU) + cached descriptor pool / command buffer / `VkFence` (per-dispatch
-  overhead 4.76 → 2.89 ms) + crash-guard fallback on missing shaders.
+  overhead 4.76 → 2.89 ms) + crash-guard fallback on **every** GPU wrapper (a
+  missing `.spv` returns empty instead of terminating the caller). Dead
+  `*_optimized`/multi-block-scan shaders dropped from the build.
 - **Build**: `-mcpu=native` (already present) plus `-fno-math-errno` /
   `-fno-semantic-interposition` (IEEE-preserving); runtime `has_dotprod` /
-  `has_fp16` capability detection.
+  `has_fp16` capability detection; `ENABLE_CUDA` defaults off on ARM.
 - **Honest reversal**: fp16 GEMM/GEMV were prototyped and **removed** — the A76
   lacks FEAT_FHM, so fp16-with-fp32-accumulation is ~3.3× *slower* than fp32 FMA.
   Only the genuinely-2× fp16 elementwise ops are kept.
