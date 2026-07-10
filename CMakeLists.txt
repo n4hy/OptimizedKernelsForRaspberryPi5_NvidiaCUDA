@@ -274,6 +274,20 @@ if (ENABLE_NEON AND ON_ARM)
         message(STATUS "  FP16 half-precision kernels enabled")
         add_compile_definitions(OPTMATH_USE_FP16)
     endif()
+
+    # Int8 dot-product (SDOT/UDOT, FEAT_DotProd / "asimddp"). The Cortex-A76 has
+    # it; a generic ARMv8-A core does not. Probe with the selected arch flag.
+    set(CMAKE_REQUIRED_FLAGS "${OPTMATH_ARCH_FLAG}")
+    check_cxx_source_compiles(
+        "#include <arm_neon.h>
+         int main(){ int32x4_t a = vdupq_n_s32(0); int8x16_t b = vdupq_n_s8(1);
+                     a = vdotq_s32(a, b, b); return (int)vgetq_lane_s32(a, 0); }"
+        OPTMATH_HAS_DOTPROD)
+    unset(CMAKE_REQUIRED_FLAGS)
+    if(OPTMATH_HAS_DOTPROD)
+        message(STATUS "  Int8 dot-product (SDOT) kernels enabled")
+        add_compile_definitions(OPTMATH_USE_DOTPROD)
+    endif()
 elseif(ENABLE_NEON AND NOT ON_ARM)
     message(STATUS "NEON enabled but not on ARM. NEON optimizations will be skipped/simulated.")
 endif()

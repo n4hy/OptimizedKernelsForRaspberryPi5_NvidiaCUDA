@@ -8,6 +8,7 @@ set(SOURCES
     neon/neon_iir.cpp
     neon/neon_conv2d.cpp
     neon/neon_linalg.cpp
+    neon/neon_int8.cpp
     platform/platform.cpp
     vulkan/vulkan_backend.cpp
 )
