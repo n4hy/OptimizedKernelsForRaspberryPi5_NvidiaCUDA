@@ -1,10 +1,10 @@
 # OptMathKernels
 
-[![Latest Release](https://img.shields.io/badge/release-v0.5.17-blue)](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.17)
+[![Latest Release](https://img.shields.io/badge/release-v0.5.19-blue)](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.19)
 
 **High-Performance Numerical Library for ARM SBCs and NVIDIA GPUs**
 
-> **Latest release:** [v0.5.17 — Raspberry Pi 5 build & full test-suite pass](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.17)
+> **Latest release:** [v0.5.19 — Pi 5 (Cortex-A76 / VideoCore VII) audit: correctness fixes, A76 tuning, NEON & Vulkan optimizations, FP16 kernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.19)
 
 OptMathKernels is a C++20 numerical library optimized for **Raspberry Pi 5**, **Orange Pi 6 Plus**, and **NVIDIA CUDA GPUs**. It seamlessly bridges **Eigen** (CPU), **ARM NEON** (SIMD), **ARM SVE2** (Scalable Vectors), **Vulkan** (Compute Shaders), and **CUDA** (NVIDIA GPUs) into a single, easy-to-use API.
 
@@ -402,6 +402,33 @@ nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader
 # Example output: "NVIDIA GeForce RTX 5090, 10.0" (Blackwell)
 ```
 
+#### Vulkan Shader Compiler (required for Vulkan backend)
+
+The Vulkan compute kernels ship as GLSL and are compiled to SPIR-V (`.spv`) **at
+build time** by `glslangValidator` (from `glslang-tools`). If it is missing, CMake
+still configures but prints `glslangValidator not found. Shaders will not be
+compiled.` and the Vulkan backend has no compute shaders to load at runtime.
+
+```bash
+sudo apt install -y glslang-tools glslc spirv-tools
+# Verify: CMake should report "found components: glslc glslangValidator"
+glslangValidator --version
+```
+
+#### Python Tooling (optional dev venv)
+
+The library itself has **no Python runtime dependency**. The packages in
+`requirements.txt` are for golden-vector generation, benchmark plotting, and
+Python-side validation only. Install them into a venv:
+
+```bash
+python3 -m venv optenv
+optenv/bin/python -m pip install -r requirements.txt   # numpy, scipy, matplotlib, pytest
+```
+
+`requirements.txt` also documents the full set of **system (apt) build
+dependencies** (toolchain, Eigen, Vulkan, shader compilers) in one place.
+
 ### Build & Install
 
 #### 1. Clone the Repository
@@ -485,9 +512,23 @@ make -j$(nproc)
 | `CMAKE_POSITION_INDEPENDENT_CODE` | ON | Enable -fPIC (set globally) |
 
 #### 3. Run Tests
+
+Tests are built when `-DBUILD_TESTS=ON` (the default). From the `build/` directory:
+
 ```bash
-ctest --output-on-failure
+ctest --output-on-failure          # run the full GoogleTest suite via CTest
+ctest -N                           # list registered tests without running
+./tests/test_neon_linalg           # or run a single suite directly
 ```
+
+The suite covers NEON kernels/complex/transcendentals/linalg/IIR/conv2d/resample,
+the four Vulkan suites (vector/matrix/DSP/advanced), radar CAF/CFAR, and platform
+detection. On an FP16-capable core (e.g. the Pi 5 Cortex-A76) a `test_neon_fp16`
+suite is also built; on a genuine SVE2 core (e.g. Orange Pi 6) `test_sve2_kernels`
+is built instead. The Vulkan suites execute **compiled SPIR-V on the GPU**, so they
+require the shader compiler above. On the Pi 5 this is 16 binaries (incl. FP16, no
+SVE2 — the Cortex-A76 has no SVE2, so those sources and their test are correctly
+skipped).
 
 #### 4. Install
 ```bash
@@ -500,7 +541,23 @@ sudo ldconfig
 ls /usr/local/lib/libOptMathKernels*
 ls /usr/local/include/optmath/
 ls /usr/local/lib/cmake/OptMathKernels/
+ls /usr/local/share/optmathkernels/shaders/   # 39 compiled .spv Vulkan shaders
 ```
+
+#### Verified: Raspberry Pi 5 (v0.5.17)
+
+A full clean build was verified on Raspberry Pi 5 hardware:
+
+| Item | Result |
+|------|--------|
+| Platform | Raspberry Pi 5, Cortex-A76 (aarch64), Debian 12 (bookworm) |
+| Toolchain | GCC 12.2, CMake 3.25, Vulkan 1.3.239, glslang 12.0 |
+| Config | `Release`, `ENABLE_NEON=ON` (+SVE2/FCMA/I8MM), `ENABLE_VULKAN=ON`, `ENABLE_CUDA=OFF` |
+| Shaders | 39/39 GLSL compiled to SPIR-V |
+| Tests | **16/16 test suites pass** (`ctest`), incl. the four Vulkan suites on the VideoCore VII GPU |
+
+> CUDA is off on Raspberry Pi 5 (no NVIDIA GPU). For NVIDIA workstation builds
+> (`ENABLE_CUDA=ON`), see the benchmark sections below.
 
 ---
 
@@ -1365,6 +1422,77 @@ OptMathKernels/
 ---
 
 ## Recent Changes
+
+### v0.5.19 - Raspberry Pi 5 (Cortex-A76 / VideoCore VII) Audit & Optimization (July 2026)
+
+A focused audit and optimization pass for the Raspberry Pi 5 target. All 16/16
+test suites pass on the Pi 5 (NEON + Vulkan, CUDA off).
+
+**Correctness fixes:**
+
+- **`neon_fast_exp_f32` numerical bug fixed** - The kernel applied a `2^f`
+  polynomial to a base-*e* reduced argument (`f = x − k·ln2`) and reconstructed
+  as `2^k·2^f`, giving ~9–12% relative error (`exp(1)` → 2.475 vs 2.718). Now
+  reduces in base-2 (`f = t − k`, `t = x·log2e`) so `2^k·2^f = e^x`; measured
+  max relative error **~5e-8**. Propagates to `neon_fast_sigmoid_f32` /
+  `neon_fast_tanh_f32`; their test tolerances tightened from 3%/6% to `1e-4`.
+- **Vulkan radix-4 FFT** used base-2 bit reversal (incorrect for radix-4); it now
+  delegates to the verified radix-2 path (correct for all power-of-2 sizes).
+- **Vulkan robustness** - dispatch is clamped to `maxComputeWorkGroupCount`
+  (was silent grid truncation); zero-size guards added to the matrix/conv/
+  correlation entry points; host-readback barrier uses `HOST_READ`/`HOST` stage;
+  the pipeline cache is keyed on shader name + buffer count + push-constant size.
+- **`neon_complex_dot_f32`** header comment corrected to match the implementation
+  (`sum(conj(a)·b)`, i.e. Eigen's `a.dot(b)` convention).
+
+**Build / Cortex-A76 tuning:**
+
+- The library now builds with **`-mcpu=native`** (→ `cortex-a76` with `+fp16`
+  and `+dotprod` scheduling) and **LTO** in Release; a default-build-type guard
+  ensures a bare `cmake ..` no longer produces an unoptimized `-O0` build.
+- **SVE2 gate fixed** - SVE2 sources are enabled only when the host CPU actually
+  reports SVE2, not merely when the compiler accepts `-march=armv9-a+sve2`. The
+  Cortex-A76 is ARMv8.2-A with no SVE2, so those ARMv9 objects (and
+  `test_sve2_kernels`) are no longer compiled on the Pi 5, removing a latent
+  illegal-instruction risk. Cross-builds can override with `-DOPTMATH_FORCE_SVE2=ON`.
+
+**NEON micro-optimizations for the A76 dual-FMA pipes:**
+
+- Multi-accumulator reductions in the radar hot paths (`caf_f32`, `xcorr_f32`,
+  `xcorr_complex_f32`), `neon_dot_f64`, and `axpy`; `projection_clutter_f32` now
+  reuses the optimized `neon_dot_f32`; the general 2D convolution uses two
+  independent tap-accumulation chains.
+- All hot multiply-accumulates use fused **`vfmaq`/`vfmsq`** (single-rounding).
+- GEMM microkernel prefetches the output tile and packed A/B panels.
+- 3×3 / 5×5 convolutions reuse overlapping loads via `vext` (≈3–5× fewer loads).
+- The polyphase resampler uses a double-length sliding delay buffer (amortized
+  O(1) per sample vs a per-sample `memmove`).
+- `neon_mat_vec_mul` blocks result rows in registers (stores once per strip).
+
+**New: half-precision (FP16) NEON kernels** - `neon_add_f16`, `neon_mul_f16`,
+`neon_relu_f16`, and `neon_dot_f16` (in `optmath/neon_fp16.hpp`) use FEAT_FP16
+vector arithmetic (8 lanes/vector) for ~2× elementwise throughput where reduced
+precision is acceptable. Built only on FP16-capable targets (auto-detected by
+CMake, `OPTMATH_USE_FP16`).
+
+**Vulkan for VideoCore VII (Pi 5):**
+
+- The **Broadcom VideoCore VII (V3D)** is now recognized (vendor `0x14E4`) and the
+  default path dispatches the **shared-memory tiled GEMM** (previously the naive
+  kernel; the tiled shader was compiled but unused).
+- A **persistent buffer pool** recycles scratch buffers by size, eliminating a
+  `vkCreateBuffer`/`vkAllocateMemory`/free on every op.
+- `vulkan_vec_norm` now uses the reduction-backed `vulkan_vec_dot(a,a)`.
+- Shaders are compiled targeting `vulkan1.2` to match the instance.
+
+**Known hardware limitations (documented, not bugs):** the Pi 5 v3dv driver does
+not expose `SUBGROUP_FEATURE_ARITHMETIC_BIT`, so subgroup-arithmetic reductions
+are unavailable (the barrier-tree reductions are retained); and it lacks
+`VK_EXT_external_memory_host`, so true zero-copy import of host pointers is not
+possible (hence the buffer pool above). `shaderFloat16` is also unsupported on
+V3D, so FP16 is a CPU/NEON feature only on this platform.
+
+---
 
 ### v0.5.17 - Raspberry Pi 5 Build & Full Test-Suite Pass (July 2026)
 

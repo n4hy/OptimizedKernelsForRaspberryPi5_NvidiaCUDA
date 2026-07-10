@@ -64,6 +64,13 @@ add_executable(test_neon_linalg test_neon_linalg.cpp)
 target_link_libraries(test_neon_linalg PRIVATE OptMathKernels::OptMathKernels gtest gtest_main)
 add_test(NAME test_neon_linalg COMMAND test_neon_linalg)
 
+# FP16 half-precision tests (only on FP16-capable targets, e.g. Cortex-A76)
+if(OPTMATH_HAS_FP16)
+    add_executable(test_neon_fp16 test_neon_fp16.cpp)
+    target_link_libraries(test_neon_fp16 PRIVATE OptMathKernels::OptMathKernels gtest gtest_main)
+    add_test(NAME test_neon_fp16 COMMAND test_neon_fp16)
+endif()
+
 # SVE2 tests (only if SVE2 is enabled)
 if(ENABLE_SVE2 AND ON_ARM AND HAS_SVE2)
     add_executable(test_sve2_kernels test_sve2_kernels.cpp)

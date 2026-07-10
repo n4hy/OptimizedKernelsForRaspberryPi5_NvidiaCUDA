@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.18)
 
 project(OptMathKernels
-    VERSION 0.5.18
+    VERSION 0.5.19
     LANGUAGES CXX
 )
 
@@ -243,6 +243,21 @@ if (ENABLE_NEON AND ON_ARM)
         # C++ only — SVE2 TUs carry their own -march, and CUDA (nvcc) would
         # reject a bare -mcpu flag.
         add_compile_options($<$<COMPILE_LANGUAGE:CXX>:${OPTMATH_ARCH_FLAG}>)
+    endif()
+
+    # Half-precision (FP16) kernels: only where the target has FEAT_FP16 vector
+    # arithmetic (the Cortex-A76 does; a generic ARMv8-A core does not). Probe
+    # with the arch flag we just selected.
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_FLAGS "${OPTMATH_ARCH_FLAG}")
+    check_cxx_source_compiles(
+        "#include <arm_neon.h>
+         int main(){ float16x8_t a = vdupq_n_f16(0); a = vfmaq_f16(a, a, a); return (int)vgetq_lane_f16(a, 0); }"
+        OPTMATH_HAS_FP16)
+    unset(CMAKE_REQUIRED_FLAGS)
+    if(OPTMATH_HAS_FP16)
+        message(STATUS "  FP16 half-precision kernels enabled")
+        add_compile_definitions(OPTMATH_USE_FP16)
     endif()
 elseif(ENABLE_NEON AND NOT ON_ARM)
     message(STATUS "NEON enabled but not on ARM. NEON optimizations will be skipped/simulated.")

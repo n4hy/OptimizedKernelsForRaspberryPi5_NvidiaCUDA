@@ -419,11 +419,13 @@ bool VulkanContext::init() {
 
 // Forward declaration for cleanup
 static void cleanupPipelineCache(VkDevice device);
+static void cleanupBufferPool(VkDevice device);
 
 void VulkanContext::cleanup() {
     if (device) {
         vkDeviceWaitIdle(device);
-        // Cleanup pipeline cache before destroying device
+        // Free pooled scratch buffers and the pipeline cache before the device.
+        cleanupBufferPool(device);
         cleanupPipelineCache(device);
         vkDestroyCommandPool(device, commandPool, nullptr);
         vkDestroyDevice(device, nullptr);
@@ -591,18 +593,59 @@ static PipelineState getOrCreatePipeline(const std::string& shaderName, size_t b
 // Helper: Run Compute Shader
 // -----------------------------------------------------------------------------
 
+// Persistent scratch-buffer pool. Every op previously did a full
+// vkCreateBuffer + vkAllocateMemory on entry and vkDestroyBuffer + vkFreeMemory
+// on exit; for iterative workloads (FFT stages, repeated same-size GEMM) that
+// allocation churn dominates. We instead recycle HOST_VISIBLE|HOST_COHERENT
+// buffers keyed by exact byte size: BufferWrapper acquires from the pool (or
+// allocates on a miss) and returns the buffer to the pool on destruction.
+// (True zero-copy would need VK_EXT_external_memory_host to import the Eigen
+// pointer directly, which the Pi 5 v3dv driver does not expose.)
+struct PooledBuffer {
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+};
+static std::multimap<VkDeviceSize, PooledBuffer> g_bufferPool;
+static std::mutex g_bufferPoolMutex;
+
+static bool bufferPoolAcquire(VkDeviceSize size, VkBuffer& buffer, VkDeviceMemory& memory) {
+    std::lock_guard<std::mutex> lock(g_bufferPoolMutex);
+    auto it = g_bufferPool.find(size);
+    if (it == g_bufferPool.end()) return false;
+    buffer = it->second.buffer;
+    memory = it->second.memory;
+    g_bufferPool.erase(it);
+    return true;
+}
+
+static void bufferPoolRelease(VkDeviceSize size, VkBuffer buffer, VkDeviceMemory memory) {
+    std::lock_guard<std::mutex> lock(g_bufferPoolMutex);
+    g_bufferPool.emplace(size, PooledBuffer{buffer, memory});
+}
+
+static void cleanupBufferPool(VkDevice device) {
+    std::lock_guard<std::mutex> lock(g_bufferPoolMutex);
+    for (auto& [sz, buf] : g_bufferPool) {
+        vkDestroyBuffer(device, buf.buffer, nullptr);
+        vkFreeMemory(device, buf.memory, nullptr);
+    }
+    g_bufferPool.clear();
+}
+
 struct BufferWrapper {
     VkBuffer buffer;
     VkDeviceMemory memory;
     VkDeviceSize size;
 
     BufferWrapper(VkDeviceSize s) : size(s) {
-        createBuffer(size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, buffer, memory);
+        if (!bufferPoolAcquire(size, buffer, memory)) {
+            createBuffer(size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, buffer, memory);
+        }
     }
     ~BufferWrapper() {
-        vkDestroyBuffer(VulkanContext::get().device, buffer, nullptr);
-        vkFreeMemory(VulkanContext::get().device, memory, nullptr);
+        // Return to the pool for reuse rather than freeing (freed at cleanup).
+        bufferPoolRelease(size, buffer, memory);
     }
     void mapAndCopyFrom(const void* src) {
         void* data;

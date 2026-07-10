@@ -12,6 +12,12 @@ set(SOURCES
     vulkan/vulkan_backend.cpp
 )
 
+# Half-precision NEON kernels (only on FP16-capable targets, e.g. Cortex-A76)
+if(OPTMATH_HAS_FP16)
+    list(APPEND SOURCES neon/neon_fp16.cpp)
+    message(STATUS "FP16 source added: neon/neon_fp16.cpp")
+endif()
+
 # SVE2 sources (added conditionally)
 if(ENABLE_SVE2 AND ON_ARM AND HAS_SVE2)
     set(SVE2_SOURCES

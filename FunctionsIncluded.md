@@ -156,18 +156,37 @@ Output size: `(in_rows - kernel_rows + 1) x (in_cols - kernel_cols + 1)`.
 
 ---
 
-### Vectorized Transcendentals (Fast Approximations)
+### Half-Precision (FP16) Operations
 
-These functions use NEON SIMD for 4-8x speedup, trading accuracy for speed.
-Typical accuracy: exp ~12%, sin/cos ~1e-5, sigmoid ~3%, tanh ~6%.
+**Header**: `#include <optmath/neon_fp16.hpp>` &nbsp; **Namespace**: `optmath::neon`
+
+IEEE binary16 kernels using ARMv8.2-A FEAT_FP16 vector arithmetic (8 lanes per
+128-bit register) for ~2× elementwise throughput where reduced precision is
+acceptable. Compiled only on FP16-capable targets (e.g. Pi 5 Cortex-A76;
+auto-detected by CMake). Pointers are `__fp16*`.
 
 | Function | Return Type | Parameters | Description |
 |----------|-------------|------------|-------------|
-| `neon_fast_exp_f32` | `void` | `float* out, const float* in, std::size_t n` | Vectorized exp (6th-order polynomial, ~12% error) |
+| `fp16_available` | `bool` | `()` | True if FP16 kernels are compiled in |
+| `neon_add_f16` | `void` | `__fp16* out, const __fp16* a, const __fp16* b, std::size_t n` | Elementwise add |
+| `neon_mul_f16` | `void` | `__fp16* out, const __fp16* a, const __fp16* b, std::size_t n` | Elementwise multiply |
+| `neon_relu_f16` | `void` | `__fp16* data, std::size_t n` | In-place ReLU: `max(0, x)` |
+| `neon_dot_f16` | `float` | `const __fp16* a, const __fp16* b, std::size_t n` | Dot product (fp16 products, fp32 accumulation) |
+
+---
+
+### Vectorized Transcendentals (Fast Approximations)
+
+These functions use NEON SIMD for 4-8x speedup, trading accuracy for speed.
+Typical accuracy: exp/sigmoid/tanh ~1e-6 (base-2 range reduction), sin/cos ~1e-5.
+
+| Function | Return Type | Parameters | Description |
+|----------|-------------|------------|-------------|
+| `neon_fast_exp_f32` | `void` | `float* out, const float* in, std::size_t n` | Vectorized exp (6th-order polynomial, ~1e-6 error) |
 | `neon_fast_sin_f32` | `void` | `float* out, const float* in, std::size_t n` | Vectorized sin (Chebyshev polynomial, ~1e-5 error) |
 | `neon_fast_cos_f32` | `void` | `float* out, const float* in, std::size_t n` | Vectorized cos (~1e-5 error) |
-| `neon_fast_sigmoid_f32` | `void` | `float* out, const float* in, std::size_t n` | Fast vectorized sigmoid (~3% error) |
-| `neon_fast_tanh_f32` | `void` | `float* out, const float* in, std::size_t n` | Fast vectorized tanh (~6% error) |
+| `neon_fast_sigmoid_f32` | `void` | `float* out, const float* in, std::size_t n` | Fast vectorized sigmoid (~1e-6 error) |
+| `neon_fast_tanh_f32` | `void` | `float* out, const float* in, std::size_t n` | Fast vectorized tanh (~1e-6 error) |
 
 **Performance** (Raspberry Pi 5):
 - `exp`: ~13 GFLOPS (45x faster than scalar)
