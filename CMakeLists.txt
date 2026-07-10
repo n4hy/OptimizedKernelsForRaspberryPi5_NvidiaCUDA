@@ -394,6 +394,15 @@ endif()
 # --- Subdirectories ---
 add_subdirectory(src)
 
+# Export OPTMATH_USE_SVE2 to CONSUMERS (INTERFACE) when the SVE2 sources were
+# actually compiled. add_compile_definitions() above only affects this project's
+# own TUs; without this a downstream that dispatches to optmath::sve2::* (e.g.
+# FilterMath.h) could not tell whether the symbols exist. Guarded by HAS_SVE2, so
+# on a Cortex-A76 / Pi 5 (no SVE2) it is a no-op and consumers fall back to NEON.
+if(HAS_SVE2)
+    target_compile_definitions(OptMathKernels INTERFACE OPTMATH_USE_SVE2)
+endif()
+
 if(BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()

@@ -36,6 +36,7 @@
 #include "optmath/neon_kernels.hpp"
 #include "optmath/platform.hpp"
 #include <cstring>
+#include <cstdlib>
 #include <algorithm>
 
 #ifdef OPTMATH_USE_NEON
@@ -63,9 +64,10 @@ static size_t get_mc() { return platform::get_gemm_mc(); }
 static size_t get_kc() { return platform::get_gemm_kc(); }
 static size_t get_nc() { return platform::get_gemm_nc(); }
 
-// Maximum possible values (for static buffer sizing)
-// NC=2048 enables better L3 utilization on CIX P1 (12MB L3):
-//   B panel = KC*NC*4 = 512*2048*4 = 4MB, 33% of 12MB L3
+// Upper bounds on the runtime blocking parameters. These CAP whatever
+// platform::get_gemm_*() reports so a mis-detected topology can never request an
+// unbounded panel; they no longer size any static storage (see PackBuffer below).
+// CIX P1 (12MB L3) is the largest supported target: KC*NC*4 = 512*2048*4 = 4MB.
 constexpr size_t MC_MAX = 256;
 constexpr size_t KC_MAX = 512;
 constexpr size_t NC_MAX = 2048;
@@ -74,9 +76,29 @@ constexpr size_t NC_MAX = 2048;
 constexpr size_t MR = 8;    // Rows per microkernel
 constexpr size_t NR = 8;    // Cols per microkernel
 
-// Aligned buffer for packed matrices (sized to max values)
-alignas(64) static thread_local float packed_A[MC_MAX * KC_MAX];
-alignas(64) static thread_local float packed_B[KC_MAX * NC_MAX];
+// 64-byte-aligned, thread-local scratch for the packed A/B panels, sized to the
+// ACTUAL runtime blocking rather than the worst-case max. On a Pi 5 (MC=128,
+// KC=256, NC=256) this is ~128KB (A) + ~256KB (B) per thread; the old static
+// max-sized arrays reserved 4.5MB per thread (~18MB across the 4 A76 cores),
+// touching far more pages/TLB entries than the kernel ever uses. The buffer
+// grows on demand and frees itself on thread exit.
+struct PackBuffer {
+    float* ptr = nullptr;
+    size_t cap = 0;  // capacity in floats
+    ~PackBuffer() { std::free(ptr); }
+    float* get(size_t n_floats) {
+        if (n_floats > cap) {
+            std::free(ptr);
+            // std::aligned_alloc requires size to be a multiple of the alignment.
+            const size_t bytes = ((n_floats * sizeof(float) + 63) / 64) * 64;
+            ptr = static_cast<float*>(std::aligned_alloc(64, bytes));
+            cap = ptr ? bytes / sizeof(float) : 0;
+        }
+        return ptr;
+    }
+};
+static thread_local PackBuffer packed_A_buf;
+static thread_local PackBuffer packed_B_buf;
 
 #ifdef OPTMATH_USE_NEON
 
@@ -244,6 +266,12 @@ void neon_gemm_blocked_f32(
     #pragma omp parallel for schedule(dynamic)
     for (size_t jc = 0; jc < N; jc += NC) {
         size_t nc = std::min(NC, N - jc);
+
+        // Per-thread packed panels, sized to the actual blocking (grow-on-demand,
+        // thread_local so each core owns its own scratch). Cheap after the first
+        // call: only reallocates when a larger panel is requested.
+        float* packed_A = packed_A_buf.get(MC * KC);
+        float* packed_B = packed_B_buf.get(KC * NC);
 
         // Loop over blocks of K
         for (size_t pc = 0; pc < K; pc += KC) {

@@ -34,6 +34,7 @@
  */
 #include "optmath/neon_kernels.hpp"
 #include <cmath>
+#include <limits>
 
 #ifdef OPTMATH_USE_NEON
 #include <arm_neon.h>
@@ -288,6 +289,12 @@ void neon_complex_magnitude_f32(float* out, const float* re, const float* im, st
         // Handle zero case (mag_sq = 0 -> rsqrt = inf, result should be 0)
         uint32x4_t zero_mask = vceqzq_f32(mag_sq);
         mag = vbslq_f32(zero_mask, vdupq_n_f32(0.0f), mag);
+
+        // Handle overflow: if re^2+im^2 overflowed to +Inf, vrsqrteq_f32(Inf)=0
+        // and Inf*0 = NaN. The scalar tail returns Inf here (std::sqrt(Inf)), so
+        // force Inf for consistency across the vector/tail boundary.
+        uint32x4_t inf_mask = vceqq_f32(mag_sq, vdupq_n_f32(std::numeric_limits<float>::infinity()));
+        mag = vbslq_f32(inf_mask, vdupq_n_f32(std::numeric_limits<float>::infinity()), mag);
 
         vst1q_f32(out + i, mag);
     }

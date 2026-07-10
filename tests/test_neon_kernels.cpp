@@ -58,6 +58,29 @@ TEST(NeonKernelTest, VectorOperations) {
         expect_approx_equal(result, expected);
     }
 
+    // Exact Div: a / 1 == a exactly (neon_div_f32 no longer perturbs the
+    // denominator with an epsilon on every element).
+    {
+        Eigen::VectorXf ones = Eigen::VectorXf::Ones(N);
+        Eigen::VectorXf out(N);
+        optmath::neon::neon_div_f32(out.data(), a.data(), ones.data(), N);
+        for (int idx = 0; idx < N; ++idx)
+            EXPECT_FLOAT_EQ(out(idx), a(idx));
+    }
+
+    // Safe Div: a zero/near-zero denominator yields a finite result (no Inf/NaN),
+    // while well-conditioned entries stay accurate.
+    {
+        Eigen::VectorXf num(4); num << 1.0f, -2.0f, 3.0f, -4.0f;
+        Eigen::VectorXf den(4); den << 0.0f, 0.0f, 1.0f, -2.0f;
+        Eigen::VectorXf out(4);
+        optmath::neon::neon_safe_div_f32(out.data(), num.data(), den.data(), 4);
+        for (int idx = 0; idx < 4; ++idx)
+            EXPECT_TRUE(std::isfinite(out(idx)));
+        EXPECT_NEAR(out(2), 3.0f, 1e-3f);
+        EXPECT_NEAR(out(3), 2.0f, 1e-3f);
+    }
+
     // Dot
     {
         float expected = a.dot(b);

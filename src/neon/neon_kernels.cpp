@@ -198,7 +198,32 @@ void neon_mul_f32(float* out, const float* a, const float* b, std::size_t n) {
 }
 
 void neon_div_f32(float* out, const float* a, const float* b, std::size_t n) {
-    // Small epsilon to prevent division by zero
+    // IEEE-exact elementwise division: out[i] = a[i] / b[i].
+    // (Previously this silently added a signed 1e-10 to EVERY denominator, so
+    // even a/1.0 did not return a — a semantic surprise for DSP/estimation code.
+    // Callers that need divide-by-zero protection should use neon_safe_div_f32.)
+#ifdef OPTMATH_USE_NEON
+    size_t i = 0;
+    for (; i + 3 < n; i += 4) {
+        float32x4_t va = vld1q_f32(a + i);
+        float32x4_t vb = vld1q_f32(b + i);
+        vst1q_f32(out + i, vdivq_f32(va, vb));
+    }
+    for (; i < n; ++i) {
+        out[i] = a[i] / b[i];
+    }
+#else
+    for (size_t i = 0; i < n; ++i) {
+        out[i] = a[i] / b[i];
+    }
+#endif
+}
+
+void neon_safe_div_f32(float* out, const float* a, const float* b, std::size_t n) {
+    // Division with a sign-preserving epsilon added to the denominator so a zero
+    // (or near-zero) denominator yields a large-but-finite result instead of
+    // Inf/NaN. The epsilon is added away from zero (never across it), so the sign
+    // of the quotient is preserved.
     const float epsilon = 1e-10f;
 #ifdef OPTMATH_USE_NEON
     float32x4_t veps = vdupq_n_f32(epsilon);
@@ -206,8 +231,7 @@ void neon_div_f32(float* out, const float* a, const float* b, std::size_t n) {
     for (; i + 3 < n; i += 4) {
         float32x4_t va = vld1q_f32(a + i);
         float32x4_t vb = vld1q_f32(b + i);
-        // Add epsilon to denominator to prevent division by zero
-        // Use sign-preserving epsilon: add epsilon if positive, subtract if negative
+        // Add epsilon if denominator >= 0, subtract if < 0 (sign-preserving).
         uint32x4_t sign_mask = vcltq_f32(vb, vdupq_n_f32(0.0f));
         float32x4_t eps_signed = vbslq_f32(sign_mask, vnegq_f32(veps), veps);
         float32x4_t vb_safe = vaddq_f32(vb, eps_signed);
@@ -215,22 +239,13 @@ void neon_div_f32(float* out, const float* a, const float* b, std::size_t n) {
     }
     for (; i < n; ++i) {
         float denom = b[i];
-        // Add epsilon with the same sign as denominator to prevent zero crossing
-        if (denom >= 0.0f) {
-            denom += epsilon;
-        } else {
-            denom -= epsilon;
-        }
+        denom += (denom >= 0.0f) ? epsilon : -epsilon;
         out[i] = a[i] / denom;
     }
 #else
     for (size_t i = 0; i < n; ++i) {
         float denom = b[i];
-        if (denom >= 0.0f) {
-            denom += epsilon;
-        } else {
-            denom -= epsilon;
-        }
+        denom += (denom >= 0.0f) ? epsilon : -epsilon;
         out[i] = a[i] / denom;
     }
 #endif
