@@ -32,6 +32,9 @@ struct CpuInfo {
     bool has_fcma;
     bool has_i8mm;
     bool has_bf16;
+    bool has_neon;     // ASIMD (always true on AArch64, parsed for completeness)
+    bool has_dotprod;  // ASIMDDP: SDOT/UDOT int8 dot product (Cortex-A76: yes)
+    bool has_fp16;     // FPHP+ASIMDHP: native FP16 arithmetic (Cortex-A76: yes)
     std::string model_name;
 };
 
