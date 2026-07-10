@@ -33,6 +33,13 @@ namespace neon {
     /// without fp16 accumulation drift over long vectors. Returns a float.
     float neon_dot_f16(const __fp16* a, const __fp16* b, std::size_t n);
 
+    // NOTE: fp16 GEMM/GEMV were prototyped here and removed. The Cortex-A76 has
+    // no FEAT_FHM (fused fp16->fp32 MAC), so any fp16 dot/GEMM needing fp32
+    // accumulation must issue explicit vcvt widenings and ends up SLOWER than
+    // the fp32 FMA path (measured ~3.3x slower for 512^3 GEMM). fp16 wins only
+    // for the pure elementwise ops above (no reduction/widening). Quantized
+    // matmul speedups come from the int8 SDOT path (neon_int8.hpp) instead.
+
 } // namespace neon
 } // namespace optmath
 
