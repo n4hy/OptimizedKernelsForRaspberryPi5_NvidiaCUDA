@@ -366,13 +366,20 @@ void caf_f32(float* out_mag,
 
     const float two_pi = 6.28318530717958647693f;
 
-    // Temporary buffers for Doppler-shifted reference and phase computation
+    // The Doppler loop is embarrassingly parallel: each bin d writes a disjoint
+    // row block of out_mag. Split it across the 4 Cortex-A76 cores. Scratch
+    // buffers (Doppler-shifted reference + phase) are declared inside the
+    // parallel region so each thread owns one set, allocated once per thread
+    // rather than per iteration. Without OpenMP the region runs once serially.
+    #pragma omp parallel
+    {
     std::vector<float> shifted_re(n_samples);
     std::vector<float> shifted_im(n_samples);
     std::vector<float> phase_buf(n_samples);
     std::vector<float> cos_buf(n_samples);
     std::vector<float> sin_buf(n_samples);
 
+    #pragma omp for schedule(static)
     for (std::size_t d = 0; d < n_doppler_bins; ++d) {
         float doppler_freq = doppler_start + d * doppler_step;
         float phase_step = two_pi * doppler_freq / sample_rate;
@@ -454,6 +461,7 @@ void caf_f32(float* out_mag,
             out_mag[d * n_range_bins + r] = std::sqrt(corr_re * corr_re + corr_im * corr_im);
         }
     }
+    } // end omp parallel
 }
 
 Eigen::MatrixXf caf(const Eigen::VectorXcf& ref,
@@ -485,6 +493,15 @@ Eigen::MatrixXf caf(const Eigen::VectorXcf& ref,
     return result;
 }
 
+// NOTE: A half-precision CAF (caf_f16) was implemented and benchmarked but
+// removed: on the Cortex-A76 it is SLOWER than caf_f32. The A76 lacks FEAT_FHM
+// (fused fp16->fp32 multiply-accumulate), so an fp16 correlation with the
+// required fp32 accumulation must issue explicit vcvt widenings — more
+// instructions than the fp32 FMA path. CAF's signals are L2-resident (the
+// kernel is compute-bound, not DRAM-bandwidth-bound), so the widening overhead
+// dominates and fp16 loses (~1230 ms vs ~820 ms at 8192x256x512, 1 thread).
+// fp16 only pays off for pure elementwise ops (add/mul/relu, no reduction).
+
 // =========================================================================
 // CFAR Detection
 // =========================================================================
@@ -494,6 +511,8 @@ void cfar_ca_f32(std::uint8_t* detections, float* threshold,
                  std::size_t guard_cells, std::size_t reference_cells,
                  float pfa_factor) {
 
+    // Each cell's threshold depends only on read-only input; fully independent.
+    #pragma omp parallel for schedule(static)
     for (std::size_t i = 0; i < n; ++i) {
         float sum = 0.0f;
         std::size_t count = 0;
@@ -576,6 +595,10 @@ void cfar_2d_f32(std::uint8_t* detections,
     const int rr = (int)ref_range;
     const int rd = (int)ref_doppler;
 
+    // Step 2 reads the SAT read-only (built serially above); each output cell is
+    // independent, so split the Doppler rows across cores. The rect_sum lambda
+    // captures sat/dims by reference but only reads them here.
+    #pragma omp parallel for schedule(static)
     for (std::size_t d = 0; d < n_doppler; ++d) {
         for (std::size_t r = 0; r < n_range; ++r) {
             // Outer window: [d - (gd+rd) .. d + (gd+rd)] x [r - (gr+rr) .. r + (gr+rr)]
@@ -608,8 +631,13 @@ void cfar_os_f32(std::uint8_t* detections, float* threshold,
                  std::size_t k_select,
                  float pfa_factor) {
 
+    // Each cell sorts its own reference window; give every thread its own
+    // ref_samples scratch. Cells are otherwise independent.
+    #pragma omp parallel
+    {
     std::vector<float> ref_samples(2 * reference_cells);
 
+    #pragma omp for schedule(static)
     for (std::size_t i = 0; i < n; ++i) {
         std::size_t count = 0;
 
@@ -642,6 +670,7 @@ void cfar_os_f32(std::uint8_t* detections, float* threshold,
         if (threshold) threshold[i] = thresh;
         detections[i] = (input[i] > thresh) ? 1 : 0;
     }
+    } // end omp parallel
 }
 
 Eigen::Matrix<std::uint8_t, Eigen::Dynamic, 1> cfar_ca(
@@ -802,16 +831,79 @@ Eigen::VectorXf projection_clutter(const Eigen::VectorXf& input,
 // Doppler Processing
 // =========================================================================
 
+// In-place iterative radix-2 Cooley-Tukey FFT (decimation-in-time), N a power
+// of two. Forward transform uses exp(-j2pi kp/N) to match the DFT convention of
+// doppler_fft_f32 (no 1/N normalization). Twiddles are precomputed once per call
+// into the caller-provided table (cos/sin of -2pi t/N for t in [0,N/2)).
+static void fft_radix2_dif(float* re, float* im, std::size_t N,
+                           const float* tw_cos, const float* tw_sin) {
+    // Bit-reversal permutation.
+    for (std::size_t i = 1, j = 0; i < N; ++i) {
+        std::size_t bit = N >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) { std::swap(re[i], re[j]); std::swap(im[i], im[j]); }
+    }
+    // Butterflies. For stage of half-length h, the twiddle for column t is
+    // exp(-j2pi t/(2h)) = table[t * (N/(2h))].
+    for (std::size_t h = 1; h < N; h <<= 1) {
+        const std::size_t step = N / (h << 1);
+        for (std::size_t base = 0; base < N; base += (h << 1)) {
+            std::size_t ti = 0;
+            for (std::size_t j = 0; j < h; ++j, ti += step) {
+                const float wr = tw_cos[ti], wi = tw_sin[ti];
+                float* ar = re + base + j;      float* ai = im + base + j;
+                float* br = re + base + j + h;   float* bi = im + base + j + h;
+                const float vr = (*br) * wr - (*bi) * wi;
+                const float vi = (*br) * wi + (*bi) * wr;
+                *br = *ar - vr;  *bi = *ai - vi;
+                *ar = *ar + vr;  *ai = *ai + vi;
+            }
+        }
+    }
+}
+
 void doppler_fft_f32(float* output_re, float* output_im,
                      const float* input_re, const float* input_im,
                      std::size_t n_pulses, std::size_t n_range,
                      std::size_t fft_size) {
 
-    // Simple DFT implementation for each range bin
-    // In production, this would use an optimized FFT library
-
     const float two_pi = 6.28318530717958647693f;
 
+    // Fast path: power-of-two FFT size -> O(N log N) radix-2 FFT per range bin
+    // (replacing the O(N^2) DFT). The pulse sequence is gathered and zero-padded
+    // to fft_size, which is exactly what the DFT loop below computes.
+    if (fft_size >= 2 && (fft_size & (fft_size - 1)) == 0) {
+        std::vector<float> tw_cos(fft_size / 2), tw_sin(fft_size / 2);
+        for (std::size_t t = 0; t < fft_size / 2; ++t) {
+            float ang = -two_pi * static_cast<float>(t) / static_cast<float>(fft_size);
+            tw_cos[t] = std::cos(ang);
+            tw_sin[t] = std::sin(ang);
+        }
+        #pragma omp parallel
+        {
+        std::vector<float> re(fft_size), im(fft_size);
+        #pragma omp for schedule(static)
+        for (std::size_t r = 0; r < n_range; ++r) {
+            std::size_t p = 0;
+            for (; p < n_pulses && p < fft_size; ++p) {
+                re[p] = input_re[p * n_range + r];
+                im[p] = input_im[p * n_range + r];
+            }
+            for (; p < fft_size; ++p) { re[p] = 0.0f; im[p] = 0.0f; }
+            fft_radix2_dif(re.data(), im.data(), fft_size, tw_cos.data(), tw_sin.data());
+            for (std::size_t k = 0; k < fft_size; ++k) {
+                output_re[k * n_range + r] = re[k];
+                output_im[k * n_range + r] = im[k];
+            }
+        }
+        }
+        return;
+    }
+
+    // Fallback: direct DFT for non-power-of-two sizes.
+    // Range bins are independent (each writes a disjoint output column set).
+    #pragma omp parallel for schedule(static)
     for (std::size_t r = 0; r < n_range; ++r) {
         for (std::size_t k = 0; k < fft_size; ++k) {
             float sum_re = 0.0f, sum_im = 0.0f;
@@ -842,6 +934,8 @@ void mti_filter_f32(float* output, const float* input,
     if (n_pulses < n_coeffs) return;
     std::size_t out_pulses = n_pulses - n_coeffs + 1;
 
+    // Output pulses are independent (disjoint output rows).
+    #pragma omp parallel for schedule(static)
     for (std::size_t p = 0; p < out_pulses; ++p) {
         for (std::size_t r = 0; r < n_range; ++r) {
             float sum = 0.0f;

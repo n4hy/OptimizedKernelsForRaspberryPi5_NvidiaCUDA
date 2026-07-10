@@ -114,6 +114,7 @@ Eigen::MatrixXf caf(const Eigen::VectorXcf& ref,
                     float sample_rate,
                     std::size_t n_range_bins);
 
+
 // =========================================================================
 // CFAR Detection
 // =========================================================================
