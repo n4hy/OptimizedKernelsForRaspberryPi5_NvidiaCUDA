@@ -133,6 +133,18 @@ namespace neon {
                                   const BiquadCoeffs* coeffs, BiquadState* states,
                                   std::size_t n_sections);
 
+    /**
+     * @brief Process 4 INDEPENDENT channels through 4 biquads in one NEON pass.
+     * The DF2T feedback serializes a single channel, but four independent
+     * channels map to the four NEON lanes and run in parallel — ~4x the scalar
+     * per-channel throughput. Layout is channel-interleaved: in[4*i + c] and
+     * out[4*i + c] are channel c's sample i, for i in [0,n), c in [0,4).
+     * coeffs[c]/state[c] belong to channel c (channels may use the same or
+     * different filters). out and in may alias.
+     */
+    void neon_biquad_x4_f32(float* out, const float* in, std::size_t n,
+                            const BiquadCoeffs coeffs[4], BiquadState state[4]);
+
     // Biquad design helpers (Audio EQ Cookbook formulas)
     BiquadCoeffs neon_biquad_lowpass(float fc, float fs, float Q = 0.7071067811865476f);
     BiquadCoeffs neon_biquad_highpass(float fc, float fs, float Q = 0.7071067811865476f);

@@ -70,6 +70,53 @@ void neon_biquad_f32(float* out, const float* in, std::size_t n,
     state.s2 = s2;
 }
 
+void neon_biquad_x4_f32(float* out, const float* in, std::size_t n,
+                        const BiquadCoeffs coeffs[4], BiquadState state[4]) {
+#ifdef OPTMATH_USE_NEON
+    // Each NEON lane carries one independent channel, so the DF2T recurrence
+    // runs 4 channels in lockstep. Coefficients/state are packed lane-per-channel.
+    const float32x4_t b0 = { coeffs[0].b0, coeffs[1].b0, coeffs[2].b0, coeffs[3].b0 };
+    const float32x4_t b1 = { coeffs[0].b1, coeffs[1].b1, coeffs[2].b1, coeffs[3].b1 };
+    const float32x4_t b2 = { coeffs[0].b2, coeffs[1].b2, coeffs[2].b2, coeffs[3].b2 };
+    const float32x4_t a1 = { coeffs[0].a1, coeffs[1].a1, coeffs[2].a1, coeffs[3].a1 };
+    const float32x4_t a2 = { coeffs[0].a2, coeffs[1].a2, coeffs[2].a2, coeffs[3].a2 };
+    float32x4_t s1 = { state[0].s1, state[1].s1, state[2].s1, state[3].s1 };
+    float32x4_t s2 = { state[0].s2, state[1].s2, state[2].s2, state[3].s2 };
+
+    for (std::size_t i = 0; i < n; ++i) {
+        float32x4_t x = vld1q_f32(in + 4 * i);
+        float32x4_t y = vfmaq_f32(s1, b0, x);              // y = b0*x + s1
+        // Keep the y->state recurrence to a single fused op each (vfmsq(a,b,c)
+        // = a - b*c). The b*x terms don't depend on y, so they leave y's
+        // critical path; this roughly halves the latency-bound inner loop.
+        float32x4_t t1 = vfmaq_f32(s2, b1, x);             // s2 + b1*x  (off critical path)
+        s1 = vfmsq_f32(t1, a1, y);                         // (s2 + b1*x) - a1*y
+        float32x4_t t2 = vmulq_f32(b2, x);                 // b2*x       (off critical path)
+        s2 = vfmsq_f32(t2, a2, y);                         // b2*x - a2*y
+        vst1q_f32(out + 4 * i, y);
+    }
+
+    float s1a[4], s2a[4];
+    vst1q_f32(s1a, s1); vst1q_f32(s2a, s2);
+    for (int c = 0; c < 4; ++c) { state[c].s1 = s1a[c]; state[c].s2 = s2a[c]; }
+#else
+    // Scalar fallback: process each channel independently.
+    for (int c = 0; c < 4; ++c) {
+        float s1 = state[c].s1, s2 = state[c].s2;
+        const float b0 = coeffs[c].b0, b1 = coeffs[c].b1, b2 = coeffs[c].b2;
+        const float a1 = coeffs[c].a1, a2 = coeffs[c].a2;
+        for (std::size_t i = 0; i < n; ++i) {
+            float x = in[4 * i + c];
+            float y = b0 * x + s1;
+            s1 = b1 * x - a1 * y + s2;
+            s2 = b2 * x - a2 * y;
+            out[4 * i + c] = y;
+        }
+        state[c].s1 = s1; state[c].s2 = s2;
+    }
+#endif
+}
+
 void neon_biquad_cascade_f32(float* out, const float* in, std::size_t n,
                               const BiquadCoeffs* coeffs, BiquadState* states,
                               std::size_t n_sections) {
