@@ -42,8 +42,9 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 include(GNUInstallDirs)
 
 # Options
-# CUDA defaults OFF on ARM (no NVIDIA GPU on a Pi 5 / Orange Pi) to skip the
-# check_language(CUDA) probe at configure time; override with -DENABLE_CUDA=ON.
+# CUDA defaults OFF on ARM (no NVIDIA GPU on a Pi 5 / Orange Pi). The lightweight
+# check_language(CUDA) probe above always runs; defaulting OFF skips the heavier
+# enable_language(CUDA) + find_package(CUDAToolkit) below. Override -DENABLE_CUDA=ON.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "arm")
     set(OPTMATH_CUDA_DEFAULT OFF)
 else()
