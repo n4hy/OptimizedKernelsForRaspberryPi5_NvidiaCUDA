@@ -407,6 +407,32 @@ bool VulkanContext::init() {
                   << " (tiled compute kernels enabled)\n";
     }
 
+    // Subgroup capability for the shuffle-based sum reduction. V3D does not
+    // expose ARITHMETIC subgroup ops (subgroupAdd), but it does expose SHUFFLE,
+    // from which we build the reduction. Requires: SHUFFLE + BASIC support in
+    // compute, a power-of-two subgroup size, and numSubgroups (256/size) <=
+    // size so the per-subgroup partials fit a single final subgroup reduction
+    // (i.e. size >= 16 for the 256-wide workgroup).
+    {
+        VkPhysicalDeviceSubgroupProperties sgProps{};
+        sgProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+        VkPhysicalDeviceProperties2 props2{};
+        props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        props2.pNext = &sgProps;
+        vkGetPhysicalDeviceProperties2(physicalDevice, &props2);
+
+        subgroupSize = sgProps.subgroupSize;
+        const bool hasShuffle = (sgProps.supportedOperations & VK_SUBGROUP_FEATURE_SHUFFLE_BIT) != 0;
+        const bool hasBasic   = (sgProps.supportedOperations & VK_SUBGROUP_FEATURE_BASIC_BIT) != 0;
+        const bool inCompute  = (sgProps.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+        const bool pow2       = subgroupSize >= 16 && (subgroupSize & (subgroupSize - 1)) == 0;
+        subgroupCanReduce = hasShuffle && hasBasic && inCompute && pow2;
+        if (subgroupCanReduce) {
+            std::cerr << "[Vulkan] Subgroup-shuffle reduction available (subgroupSize="
+                      << subgroupSize << ")\n";
+        }
+    }
+
     initialized = true;
 
     // Register atexit handler so cleanup runs before static destructors of
@@ -1334,12 +1360,23 @@ static float run_reduction(const Eigen::VectorXf& a, const std::string& shaderNa
     return result;
 }
 
+static ReduceBackend g_reduceBackend = ReduceBackend::Auto;
+void set_reduce_backend(ReduceBackend b) { g_reduceBackend = b; }
+ReduceBackend get_reduce_backend() { return g_reduceBackend; }
+bool subgroup_reduce_available() { return VulkanContext::get().subgroupCanReduce; }
+
 float vulkan_reduce_sum(const Eigen::VectorXf& a) {
     auto& ctx = VulkanContext::get();
     if (ctx.isMaliG720) {
         return run_reduction(a, "reduce_sum_mali.comp.spv", 0.0f, [](float x, float y){ return x + y; }, 1024);
     }
-    return run_reduction(a, "reduce_sum.comp.spv", 0.0f, [](float x, float y){ return x + y; });
+    // Prefer the subgroup-shuffle kernel when the device supports it (V3D does);
+    // the barrier tree remains the portable fallback. Both use a 256-wide group.
+    const bool useSubgroup =
+        (g_reduceBackend == ReduceBackend::Subgroup) ||
+        (g_reduceBackend == ReduceBackend::Auto && ctx.subgroupCanReduce);
+    const char* shader = useSubgroup ? "reduce_sum_subgroup.comp.spv" : "reduce_sum.comp.spv";
+    return run_reduction(a, shader, 0.0f, [](float x, float y){ return x + y; });
 }
 
 float vulkan_reduce_max(const Eigen::VectorXf& a) {
@@ -1488,6 +1525,9 @@ Eigen::MatrixXf vulkan_convolution_2d(const Eigen::MatrixXf&, const Eigen::Matri
 Eigen::VectorXf vulkan_correlation_1d(const Eigen::VectorXf&, const Eigen::VectorXf&) { return {}; }
 Eigen::MatrixXf vulkan_correlation_2d(const Eigen::MatrixXf&, const Eigen::MatrixXf&) { return {}; }
 
+void set_reduce_backend(ReduceBackend) {}
+ReduceBackend get_reduce_backend() { return ReduceBackend::Auto; }
+bool subgroup_reduce_available() { return false; }
 float vulkan_reduce_sum(const Eigen::VectorXf&) { return 0.0f; }
 float vulkan_reduce_max(const Eigen::VectorXf&) { return 0.0f; }
 float vulkan_reduce_min(const Eigen::VectorXf&) { return 0.0f; }

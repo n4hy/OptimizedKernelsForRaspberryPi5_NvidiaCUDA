@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.18)
 
 project(OptMathKernels
-    VERSION 0.5.19
+    VERSION 0.5.20
     LANGUAGES CXX
 )
 

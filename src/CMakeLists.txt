@@ -90,6 +90,7 @@ if(ENABLE_VULKAN)
             correlation_2d.comp.glsl
             # Reductions
             reduce_sum.comp.glsl
+            reduce_sum_subgroup.comp.glsl
             reduce_max.comp.glsl
             reduce_min.comp.glsl
             reduce_complete.comp.glsl

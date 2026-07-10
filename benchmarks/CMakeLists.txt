@@ -31,6 +31,11 @@ add_executable(bench_vulkan_matmul bench_vulkan_matmul.cpp)
 target_link_libraries(bench_vulkan_matmul PRIVATE OptMathKernels::OptMathKernels benchmark::benchmark)
 target_include_directories(bench_vulkan_matmul PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
+# Vulkan Reduction A/B Benchmark (barrier tree vs subgroup shuffle)
+add_executable(bench_vulkan_reduce bench_vulkan_reduce.cpp)
+target_link_libraries(bench_vulkan_reduce PRIVATE OptMathKernels::OptMathKernels benchmark::benchmark)
+target_include_directories(bench_vulkan_reduce PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 # Radar CAF Benchmark
 add_executable(bench_radar_caf bench_radar_caf.cpp)
 target_link_libraries(bench_radar_caf PRIVATE OptMathKernels::OptMathKernels benchmark::benchmark)

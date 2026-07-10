@@ -1,10 +1,10 @@
 # OptMathKernels
 
-[![Latest Release](https://img.shields.io/badge/release-v0.5.19-blue)](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.19)
+[![Latest Release](https://img.shields.io/badge/release-v0.5.20-blue)](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.20)
 
 **High-Performance Numerical Library for ARM SBCs and NVIDIA GPUs**
 
-> **Latest release:** [v0.5.19 — Pi 5 (Cortex-A76 / VideoCore VII) audit: correctness fixes, A76 tuning, NEON & Vulkan optimizations, FP16 kernels](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.19)
+> **Latest release:** [v0.5.20 — Subgroup-shuffle GPU reduction (benchmarked ~1.2–1.65× faster on Pi 5 V3D)](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.5.20)
 
 OptMathKernels is a C++20 numerical library optimized for **Raspberry Pi 5**, **Orange Pi 6 Plus**, and **NVIDIA CUDA GPUs**. It seamlessly bridges **Eigen** (CPU), **ARM NEON** (SIMD), **ARM SVE2** (Scalable Vectors), **Vulkan** (Compute Shaders), and **CUDA** (NVIDIA GPUs) into a single, easy-to-use API.
 
@@ -1422,6 +1422,38 @@ OptMathKernels/
 ---
 
 ## Recent Changes
+
+### v0.5.20 - Subgroup-Shuffle GPU Reduction (July 2026)
+
+Follows up the v0.5.19 audit note that subgroup **arithmetic** ops
+(`subgroupAdd`) are unavailable on the Pi 5's V3D driver. V3D *does* expose
+subgroup **SHUFFLE**, so the sum reduction is now built from a
+`subgroupShuffleXor` butterfly (`reduce_sum_subgroup.comp.glsl`) instead of the
+shared-memory barrier tree — no `subgroupAdd` required.
+
+- **Auto-selected when supported.** `vulkan_reduce_sum` picks the subgroup kernel
+  when the device reports SHUFFLE + BASIC in compute with a power-of-two subgroup
+  size ≥ 16 (V3D: 16), and falls back to the barrier tree otherwise. A new
+  `set_reduce_backend(Auto | BarrierTree | Subgroup)` hook and
+  `subgroup_reduce_available()` allow forcing a backend for tuning/benchmarking.
+- **Benchmarked ~1.2–1.65× faster** on the Pi 5 V3D across 1K–4M elements
+  (`benchmarks/bench_vulkan_reduce.cpp`, an A/B harness that validates
+  correctness against a CPU reference before timing). Medians, `-mcpu=native`
+  Release build:
+
+  | N | barrier tree | subgroup shuffle | speedup |
+  |---|-------------:|-----------------:|--------:|
+  | 1,024      | 149 µs   | 104 µs   | 1.43× |
+  | 32,768     | 641 µs   | 496 µs   | 1.29× |
+  | 262,144    | 4.32 ms  | 3.57 ms  | 1.21× |
+  | 2,097,152  | 26.8 ms  | 16.3 ms  | 1.65× |
+  | 4,194,304  | 54.5 ms  | 36.6 ms  | 1.49× |
+
+- All 16/16 test suites still pass with the subgroup path as the default on the
+  Pi 5. (`subgroupAdd`/ARITHMETIC remains unsupported on V3D; only the
+  SHUFFLE-based construction works there.)
+
+---
 
 ### v0.5.19 - Raspberry Pi 5 (Cortex-A76 / VideoCore VII) Audit & Optimization (July 2026)
 

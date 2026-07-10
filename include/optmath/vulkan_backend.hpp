@@ -44,6 +44,10 @@ namespace vulkan {
         bool isMaliG720 = false;
         bool isBroadcomGpu = false;  // Broadcom VideoCore (Raspberry Pi)
 
+        // Subgroup reduction capability (SHUFFLE-based; V3D lacks ARITHMETIC).
+        uint32_t subgroupSize = 0;
+        bool subgroupCanReduce = false;  // shuffle + size pow2 + fits final reduction
+
     private:
         VulkanContext() = default;
         ~VulkanContext() {
@@ -80,6 +84,14 @@ namespace vulkan {
     Eigen::MatrixXf vulkan_convolution_2d(const Eigen::MatrixXf& x, const Eigen::MatrixXf& k);
     Eigen::VectorXf vulkan_correlation_1d(const Eigen::VectorXf& x, const Eigen::VectorXf& k);
     Eigen::MatrixXf vulkan_correlation_2d(const Eigen::MatrixXf& x, const Eigen::MatrixXf& k);
+
+    // Reduction backend selection (for benchmarking / tuning the sum reduction).
+    // Auto: use the subgroup-shuffle kernel where the device supports it
+    // (e.g. Pi 5 V3D), else the shared-memory barrier tree.
+    enum class ReduceBackend { Auto, BarrierTree, Subgroup };
+    void set_reduce_backend(ReduceBackend b);
+    ReduceBackend get_reduce_backend();
+    bool subgroup_reduce_available();
 
     // Reductions & Scan
     float vulkan_reduce_sum(const Eigen::VectorXf& a);
