@@ -166,6 +166,12 @@ target_include_directories(OptMathKernels
 # Link dependencies
 target_link_libraries(OptMathKernels PUBLIC Eigen3::Eigen)
 
+# OpenMP: PUBLIC so the -fopenmp compile flag reaches these TUs and libgomp is
+# propagated to consumers (tests/examples) that link the static archive.
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(OptMathKernels PUBLIC OpenMP::OpenMP_CXX)
+endif()
+
 if(ENABLE_VULKAN)
     target_link_libraries(OptMathKernels PRIVATE Vulkan::Vulkan)
     # Tell vulkan_backend.cpp where compiled SPV shaders live at build time

@@ -105,7 +105,22 @@ if(ENABLE_VULKAN)
     endif()
 endif()
 
-# 3. CUDA (NVIDIA GPU support)
+# 3. OpenMP (multi-core CPU parallelism for the NEON kernels)
+# The Pi 5 has 4 Cortex-A76 cores; the hot GEMM/CAF/CFAR/conv kernels are
+# otherwise single-threaded. Linked PUBLIC in src/CMakeLists.txt so consumers
+# pick up libgomp. Pragmas are guarded with #ifdef _OPENMP so a no-OpenMP
+# build still compiles serially.
+option(ENABLE_OPENMP "Enable OpenMP multi-threading of CPU kernels" ON)
+if(ENABLE_OPENMP)
+    find_package(OpenMP)
+    if(OpenMP_CXX_FOUND)
+        message(STATUS "OpenMP found: ${OpenMP_CXX_VERSION} (multi-core CPU kernels enabled)")
+    else()
+        message(STATUS "OpenMP not found; CPU kernels will run single-threaded")
+    endif()
+endif()
+
+# 4. CUDA (NVIDIA GPU support)
 if(ENABLE_CUDA)
     if(CMAKE_CUDA_COMPILER)
         enable_language(CUDA)
@@ -325,6 +340,33 @@ if (ENABLE_VULKAN)
 endif()
 
 # CUDA definitions already added in detection section above
+
+# --- Conservative codegen flags (keep IEEE semantics) ---
+# -fno-math-errno: the hot radar loops call std::cos/std::sin/std::sqrt per
+#   element (neon_radar.cpp). Treating libm as errno-setting blocks inlining and
+#   the A76 fsqrt/reciprocal paths; dropping errno lets them vectorize.
+# -fno-semantic-interposition: under the library's -fPIC, intra-library calls to
+#   non-static functions (e.g. neon::neon_fast_cos_f32 from caf_f32) otherwise
+#   route through the GOT and cannot inline.
+# Neither relaxes NaN/Inf/signed-zero/reassociation (unlike -ffast-math), so the
+# numerically sensitive filter paths keep full IEEE behavior.
+include(CheckCXXCompilerFlag)
+set(OPTMATH_CODEGEN_FLAGS "")
+foreach(_optmath_flag -fno-math-errno -fno-semantic-interposition)
+    string(MAKE_C_IDENTIFIER "HAS_${_optmath_flag}" _optmath_flagvar)
+    check_cxx_compiler_flag("${_optmath_flag}" ${_optmath_flagvar})
+    if(${_optmath_flagvar})
+        list(APPEND OPTMATH_CODEGEN_FLAGS ${_optmath_flag})
+    endif()
+endforeach()
+if(OPTMATH_CODEGEN_FLAGS)
+    message(STATUS "Conservative codegen flags: ${OPTMATH_CODEGEN_FLAGS}")
+    # Wrap each flag in its own genex: a list inside a single $<...:a;b> breaks
+    # because the closing '>' attaches to the last list element.
+    foreach(_optmath_cg ${OPTMATH_CODEGEN_FLAGS})
+        add_compile_options($<$<COMPILE_LANGUAGE:CXX>:${_optmath_cg}>)
+    endforeach()
+endif()
 
 # --- Subdirectories ---
 add_subdirectory(src)
