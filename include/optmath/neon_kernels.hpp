@@ -82,6 +82,19 @@ namespace neon {
                                    PolyphaseResamplerState& state);
 
     /**
+     * @brief Streaming resample with an explicit output-capacity guard.
+     * Identical to the 4-argument overload but never writes past out[out_capacity-1],
+     * so a caller that sized `out` per-chunk cannot heap-overflow if leftover phase
+     * state produces a burst. Returns the number of samples actually written
+     * (clamped to out_capacity); any excess tail samples are dropped rather than
+     * written out of bounds. The 4-argument overload delegates here with an
+     * unbounded capacity, preserving its exact behavior.
+     */
+    std::size_t neon_resample_f32(float* out, std::size_t out_capacity,
+                                   const float* in, std::size_t input_len,
+                                   PolyphaseResamplerState& state);
+
+    /**
      * @brief One-shot polyphase resampler (non-streaming, zero-padded edges).
      * Output length is written to *output_len.
      * Caller must allocate out with at least ceil(input_len * L / M) + 1 floats.
