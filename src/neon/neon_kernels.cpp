@@ -897,6 +897,17 @@ void neon_tanh(Eigen::VectorXf& x) {
 Eigen::MatrixXf neon_gemm(const Eigen::MatrixXf& A, const Eigen::MatrixXf& B) {
     if (A.cols() != B.rows()) return Eigen::MatrixXf();
 
+    // For substantial problems, delegate to the cache-blocked 8x8 microkernel
+    // (register-blocked to ~all 32 NEON regs, packed panels, and multi-threaded
+    // across the 4 A76 cores). The old 4x4 path below used only ~8 registers and
+    // re-read/re-wrote the C block on every k-step — 3-8x slower on medium/large
+    // matrices. Small problems keep the lightweight 4x4 path to avoid packing +
+    // thread-fork overhead.
+    const long Md = A.rows(), Nd = B.cols(), Kd = A.cols();
+    if (Md >= 64 && Nd >= 64 && Kd >= 64) {
+        return neon_gemm_blocked(A, B);
+    }
+
     // Result C
     Eigen::MatrixXf C = Eigen::MatrixXf::Zero(A.rows(), B.cols());
 
@@ -1046,7 +1057,32 @@ Eigen::VectorXf neon_mat_vec_mul(const Eigen::MatrixXf& A, const Eigen::VectorXf
     const int cols = static_cast<int>(A.cols());
     const float* vv = v.data();
     float* r = res.data();
+    const int lda = static_cast<int>(A.outerStride());
+    const float* A0 = A.data();
     int i = 0;
+
+    // 16-row block: four independent accumulator chains. The A76 has two FP
+    // pipes with ~4-cycle FMA latency, so ~4 in-flight chains are needed to hide
+    // the latency of the loop-carried accumulation (two chains, as in the 8-row
+    // block below, leaves the pipes ~half idle on long columns).
+    for (; i + 15 < rows; i += 16) {
+        float32x4_t acc0 = vdupq_n_f32(0.0f);
+        float32x4_t acc1 = vdupq_n_f32(0.0f);
+        float32x4_t acc2 = vdupq_n_f32(0.0f);
+        float32x4_t acc3 = vdupq_n_f32(0.0f);
+        for (int j = 0; j < cols; ++j) {
+            const float* col = A0 + (size_t)j * lda + i;
+            float32x4_t vval = vdupq_n_f32(vv[j]);
+            acc0 = vfmaq_f32(acc0, vld1q_f32(col),      vval);
+            acc1 = vfmaq_f32(acc1, vld1q_f32(col + 4),  vval);
+            acc2 = vfmaq_f32(acc2, vld1q_f32(col + 8),  vval);
+            acc3 = vfmaq_f32(acc3, vld1q_f32(col + 12), vval);
+        }
+        vst1q_f32(r + i,      acc0);
+        vst1q_f32(r + i + 4,  acc1);
+        vst1q_f32(r + i + 8,  acc2);
+        vst1q_f32(r + i + 12, acc3);
+    }
 
     for (; i + 7 < rows; i += 8) {
         float32x4_t acc0 = vdupq_n_f32(0.0f);
