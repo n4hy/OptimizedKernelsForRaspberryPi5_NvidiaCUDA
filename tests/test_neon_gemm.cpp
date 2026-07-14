@@ -97,3 +97,56 @@ TEST(NeonGemm, OverwritesDestination) {
         EXPECT_TRUE(once.isApprox(A * B, 1e-4f)) << "N=" << N;
     }
 }
+
+// neon_gemm is the public API the README advertises. Until v0.6.3 it guarded the
+// blocked path with `Md >= 64 && Nd >= 64 && Kd >= 64`, so any ONE small
+// dimension dropped an arbitrarily large GEMM onto a naive 4x4 loop -- measured
+// 22.9x slower at 4096x32x4096. Nothing caught it: the only test that called
+// neon_gemm used 64x64x64, the exact size that takes the other branch.
+// These shapes all took the naive path before the fix.
+TEST(NeonGemm, PublicWrapperMatchesEigenIncludingSmallDimensions) {
+    using optmath::neon::neon_gemm;
+    struct { int M, N, K; } shapes[] = {
+        {64, 64, 64},      // the only size the old suite tested
+        {63, 63, 63},      // just under the old gate on every axis
+        {4096 / 32, 32, 128},
+        {128, 32, 128},    // N < 64  -> was the naive path
+        {32, 128, 128},    // M < 64
+        {128, 128, 32},    // K < 64
+        {1, 128, 128},     // degenerate M
+        {128, 1, 128},     // degenerate N
+        {128, 128, 1},     // degenerate K
+        {8, 8, 8}, {4, 4, 4}, {3, 5, 7},  // tiny / ragged
+    };
+    for (const auto& s : shapes) {
+        Eigen::MatrixXf A = Eigen::MatrixXf::Random(s.M, s.K);
+        Eigen::MatrixXf B = Eigen::MatrixXf::Random(s.K, s.N);
+        Eigen::MatrixXf got = neon_gemm(A, B);
+        Eigen::MatrixXf ref = A * B;
+        ASSERT_EQ(got.rows(), s.M);
+        ASSERT_EQ(got.cols(), s.N);
+        const float scale = std::max(1.0f, ref.cwiseAbs().maxCoeff());
+        EXPECT_LT((got - ref).cwiseAbs().maxCoeff() / scale, 1e-4f)
+            << "neon_gemm wrong at " << s.M << "x" << s.N << "x" << s.K;
+    }
+}
+
+// neon_gemm_4x4_f32 stays exported and benchmarked but is no longer reachable
+// through neon_gemm, so it needs its own test. It ACCUMULATES into C.
+TEST(NeonGemm, Microkernel4x4AccumulatesWithStrides) {
+    using optmath::neon::neon_gemm_4x4_f32;
+    // Column-major 4x4 blocks with non-trivial leading dimensions.
+    const std::size_t lda = 8, ldb = 8, ldc = 8;
+    Eigen::MatrixXf A = Eigen::MatrixXf::Random(lda, 4);
+    Eigen::MatrixXf B = Eigen::MatrixXf::Random(ldb, 4);
+    Eigen::MatrixXf C = Eigen::MatrixXf::Zero(ldc, 4);
+    Eigen::MatrixXf C0 = C;
+
+    neon_gemm_4x4_f32(C.data(), A.data(), lda, B.data(), ldb, ldc);
+
+    Eigen::MatrixXf expected = C0.topLeftCorner(4, 4)
+                             + A.topLeftCorner(4, 4) * B.topLeftCorner(4, 4);
+    EXPECT_TRUE(C.topLeftCorner(4, 4).isApprox(expected, 1e-4f))
+        << "4x4 microkernel result:\n" << C.topLeftCorner(4, 4)
+        << "\nexpected:\n" << expected;
+}

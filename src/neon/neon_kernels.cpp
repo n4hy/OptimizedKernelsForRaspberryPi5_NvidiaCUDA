@@ -912,53 +912,29 @@ void neon_tanh(Eigen::VectorXf& x) {
 Eigen::MatrixXf neon_gemm(const Eigen::MatrixXf& A, const Eigen::MatrixXf& B) {
     if (A.cols() != B.rows()) return Eigen::MatrixXf();
 
-    // For substantial problems, delegate to the cache-blocked 8x8 microkernel
-    // (register-blocked to ~all 32 NEON regs, packed panels, and multi-threaded
-    // across the 4 A76 cores). The old 4x4 path below used only ~8 registers and
-    // re-read/re-wrote the C block on every k-step — 3-8x slower on medium/large
-    // matrices. Small problems keep the lightweight 4x4 path to avoid packing +
-    // thread-fork overhead.
-    const long Md = A.rows(), Nd = B.cols(), Kd = A.cols();
-    if (Md >= 64 && Nd >= 64 && Kd >= 64) {
-        return neon_gemm_blocked(A, B);
-    }
-
-    // Result C
-    Eigen::MatrixXf C = Eigen::MatrixXf::Zero(A.rows(), B.cols());
-
-    // Simple tiled implementation calling 4x4 microkernel
-    // We iterate over 4x4 blocks of C
-    for (long j = 0; j < C.cols(); j += 4) {
-        for (long i = 0; i < C.rows(); i += 4) {
-            // For each block C[i:i+4, j:j+4]
-            // Accumulate A[i:i+4, k:k+4] * B[k:k+4, j:j+4]
-            for (long k = 0; k < A.cols(); k += 4) {
-                // Check bounds
-                if (i + 4 <= C.rows() && j + 4 <= C.cols() && k + 4 <= A.cols()) {
-                    // Fast path: 4x4 aligned block
-                     neon_gemm_4x4_f32(&C(i, j), &A(i, k), A.outerStride(),
-                                       &B(k, j), B.outerStride(),
-                                       C.outerStride());
-                } else {
-                    // Fallback for boundary blocks (naive multiply)
-                    long i_lim = std::min(i + 4, (long)C.rows());
-                    long j_lim = std::min(j + 4, (long)C.cols());
-                    long k_lim = std::min(k + 4, (long)A.cols());
-
-                    for (long jj = j; jj < j_lim; ++jj) {
-                        for (long ii = i; ii < i_lim; ++ii) {
-                            float sum = 0.0f;
-                            for (long kk = k; kk < k_lim; ++kk) {
-                                sum += A(ii, kk) * B(kk, jj);
-                            }
-                            C(ii, jj) += sum;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return C;
+    // Always delegate to the cache-blocked 8x8 path (register-blocked to ~all 32
+    // NEON regs, packed panels, multi-threaded across the 4 A76 cores; it hands
+    // M*N*K < 80^3 to Eigen itself, so small problems pay no packing or fork).
+    //
+    // v0.6.3: this used to read `if (Md >= 64 && Nd >= 64 && Kd >= 64)`, falling
+    // through to a naive 4x4 loop otherwise. The `&&` meant ANY ONE small
+    // dimension sent an arbitrarily large GEMM down the slow path -- the same
+    // shape as the V3D offload bug: the guard enabled the slow path exactly where
+    // it cost the most. neon_gemm is the public API the README advertises, so
+    // callers ate it silently. Measured (idle Pi 5, ABBA-paired, medians),
+    // old 4x4 path vs blocked:
+    //     4096x32x4096    0.9 vs 20.6 GFLOPS  -> 22.9x slower
+    //     63x63x63        6.0 vs 41.3         ->  6.9x
+    //     4096x4096x32    6.7 vs 12.2         ->  1.8x
+    //     32x32x32       12.1 vs 23.1         ->  1.9x
+    // The 4x4 path won at exactly one size, 8x8x8 (7.0 vs 3.5 GFLOPS) -- a ~150ns
+    // operation -- and it had zero test coverage, so it is not worth keeping a
+    // branch for. The comment justifying it ("avoid packing + thread-fork
+    // overhead") was also already false: blocked routes small work to Eigen.
+    //
+    // neon_gemm_4x4_f32 remains exported and benchmarked (BM_NEON_GEMM_4x4); it
+    // is simply no longer reachable through this wrapper.
+    return neon_gemm_blocked(A, B);
 }
 
 Eigen::MatrixXf neon_mat_scale(const Eigen::MatrixXf& A, float s) {

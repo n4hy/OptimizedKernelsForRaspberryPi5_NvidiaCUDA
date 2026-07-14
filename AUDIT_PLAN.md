@@ -4,6 +4,10 @@
 **Auditor:** Claude Code
 **Scope:** Full codebase audit for errors, bugs, and optimization opportunities
 
+> **See the [July 2026 Multi-Agent Kernel Sweep (v0.6.3)](#july-2026-multi-agent-kernel-sweep-v063)**
+> for the 42 confirmed findings across every kernel (18 correctness, 15 missing tests,
+> 9 unmeasured perf claims) and what was fixed.
+>
 > **See the [July 2026 Performance Re-Audit (v0.6.1–v0.6.2)](#july-2026-performance-re-audit-v061v062) section**
 > for the two performance defects found by measurement on real Pi 5 hardware, the
 > recurring patterns that produced them, and the open items with measured numbers.
@@ -29,6 +33,85 @@ Comprehensive audit of 56+ source files revealed **37 issues** across severity l
 | `98f463a` | Fix numerical stability, error handling, and platform test portability |
 | `4f784eb` | v0.5.2: Fix critical bugs across SVE2, CUDA, Vulkan, NEON, and platform backends |
 | v0.5.7 | SVE2 pipeline optimization: inline transcendentals, vectorize GEMM microkernel, vectorize CAF Doppler shift |
+
+---
+
+## July 2026 Multi-Agent Kernel Sweep (v0.6.3)
+
+A 112-agent sweep of **every** kernel in `src/` for the three patterns recorded in the
+v0.6.1-v0.6.2 re-audit, each finding then handed to an independent skeptic prompted to
+refute it. **99 raw findings -> 42 confirmed, 57 refuted (58% kill rate).** Static
+analysis only: on a 4-core Pi one process measures at a time, so the agents read code
+and the measurements below were taken serially afterwards.
+
+Confirmed: **18 correctness, 15 no-test-coverage, 9 unmeasured-perf-claim**; 22 high.
+The two patterns from v0.6.1/v0.6.2 recur across NEON, SVE2, Vulkan **and** CUDA --
+they were never one-off mistakes.
+
+### Fixed in v0.6.3
+
+| ID | File:line | Defect | Fix |
+|----|-----------|--------|-----|
+| S1 | `neon_kernels.cpp:922` | **`neon_gemm` -- the public API the README advertises -- guarded its fast path with `M >= 64 && N >= 64 && K >= 64`. Any ONE small dimension dropped an arbitrarily large GEMM onto a naive, single-threaded, unpacked 4x4 loop.** Same shape as the V3D bug: the guard enabled the slow path exactly where it cost most. Measured (idle Pi 5, ABBA-paired, medians) vs `neon_gemm_blocked`: 4096x32x4096 **0.9 vs 20.6 GFLOPS (22.9x)**, 63x63x63 6.0 vs 41.3 (6.9x), 32x32x32 12.1 vs 23.1, 4096x4096x32 6.7 vs 12.2. The comment's justification ("avoid packing + thread-fork overhead") was already false -- `neon_gemm_blocked` routes `M*N*K < 80^3` to Eigen itself. | Always delegate to `neon_gemm_blocked`. The 4x4 path won at exactly one size (8x8x8, 7.0 vs 3.5 GFLOPS -- a ~150ns op) and had zero test coverage. **4096x32x4096: 0.9 -> 18.1 GFLOPS (20x).** |
+| S2 | `neon_gemm_optimized.cpp:59` | File header advertised Pi 5 `NC=512` -- the exact value `platform.cpp:432-434` documents as the L2-thrashing bug it fixed (B panel = 512KB = all of L2). Introduced by the v0.6.2 work in this same file. | Header now states MC/KC/NC are computed at runtime and records the measured Pi 5 values (128/256/256) plus why 512 was wrong. |
+| S3 | `test_neon_gemm.cpp` | `neon_gemm`'s 4x4 path and the exported `neon_gemm_4x4_f32` microkernel had **zero** test coverage -- the only test calling `neon_gemm` used 64x64x64, precisely the size that takes the other branch. | Added `PublicWrapperMatchesEigenIncludingSmallDimensions` (12 shapes incl. every axis under the old gate) and `Microkernel4x4AccumulatesWithStrides`. |
+| S4 | `bench_neon_gemm.cpp` | **No benchmark could observe S1.** Every GEMM benchmark swept SQUARE sizes >= 64, which always satisfy the old guard. Correctness tests could not catch it either -- the naive path was *right*, just slow. | Added `BM_NEON_GEMM_Public_SmallDim` over the public wrapper with one small dimension per axis, plus a square control that must track `BM_NEON_GEMM_Blocked/256`. |
+
+### Confirmed and NOT yet fixed
+
+Ordered by severity. **The correctness bugs are more urgent than any of the
+performance work** -- several return silently wrong answers. `caf()` and
+`cuda_conv2d` are the same class of bug the v0.6.1 audit found: a column-major
+Eigen buffer handed to a row-major writer.
+
+CUDA and SVE2 findings are **static-only** -- neither compiles on this host (no nvcc;
+the A76 has no SVE2), so they are unverified by execution and unmeasurable here.
+
+| Sev | Pattern | File:line | Defect |
+|-----|---------|-----------|--------|
+| HIGH | `correctness` | `src/cuda/cuda_complex.cu:416` | kernel_conv2d_f32 indexes image, kernel and output as row-major, but cuda_conv2d feeds it Eigen::MatrixXf::data() which is column-major, producing wrong results for any non-square input. |
+| HIGH | `correctness` | `src/neon/neon_fp16.cpp:72` | neon_dot_f16 forms products in fp16, so any term whose product exceeds 65504 saturates to +Inf and poisons the entire dot product, while the scalar tail for the same values computes in fp... |
+| HIGH | `correctness` | `src/neon/neon_radar.cpp:479` | The caf() Eigen wrapper hands a column-major Eigen::MatrixXf buffer to caf_f32, which writes row-major, so the returned range-Doppler map is scrambled whenever n_doppler_bins > 1 and n_ra... |
+| HIGH | `correctness` | `src/neon/neon_radar.cpp:773` | nlms_filter_f32 writes filter_length-1 elements into the output buffer without bounding against n, overflowing the caller's buffer whenever filter_length > n. |
+| HIGH | `correctness` | `src/sve2/sve2_complex.cpp:206` | sve2_complex_conj_mul_interleaved_f32's FCMA path uses rotations 0+270, which computes conj(a)*b, not the documented a*conj(b) -- the imaginary part comes out sign-flipped and disagrees w... |
+| HIGH | `correctness` | `src/sve2/sve2_kernels.cpp:656` | micro_kernel_8x8_sve2 hard-codes +4 lane offsets and is only correct when svcntw()==4 (128-bit VL), despite the file header claiming a "VL-agnostic design". |
+| HIGH | `correctness` | `src/sve2/sve2_kernels.cpp:838` | sve2_gemm_i8mm's I8MM path performs int8 zero-point subtraction in int8_t, silently wrapping on overflow, and disagrees with its own scalar fallback which correctly promotes to int32. |
+| HIGH | `correctness` | `src/vulkan/vulkan_backend.cpp:736` | run_compute caches the descriptor pool, command buffer and fence in function-local statics that are never reset by VulkanContext::cleanup(), so a cleanup()+re-init cycle uses handles from... |
+| HIGH | `no-test-coverage` | `src/neon/neon_kernels.cpp:931` | The entire 4x4 tiled path in neon_gemm and the exported neon_gemm_4x4_f32 microkernel are executed by zero tests — the only test that calls neon_gemm picks exactly the size that takes the... |
+| HIGH | `no-test-coverage` | `src/neon/neon_kernels.cpp:123` | neon_dot_f64 and its Eigen wrapper neon_dot(VectorXd) are exported but have zero test coverage anywhere in tests/. |
+| HIGH | `no-test-coverage` | `src/neon/neon_linalg.cpp:227` | neon_trsm_lower_f32 and neon_trsm_upper_f32 are exported in the public header but have zero tests and zero callers anywhere in the repository. |
+| HIGH | `no-test-coverage` | `src/neon/neon_radar.cpp:956` | mti_filter_f32 — the OpenMP-parallel exported kernel — has no test and no benchmark, because the Eigen wrapper mti_filter reimplements the filter serially instead of calling it. |
+| HIGH | `no-test-coverage` | `src/sve2/sve2_kernels.cpp:799` | sve2_gemm_i8mm -- an exported kernel with three divergent implementations behind #ifdefs -- has no test at all, which is why its int8 zero-point truncation bug persists. |
+| HIGH | `no-test-coverage` | `src/sve2/sve2_radar.cpp:54` | Every exported entry point in sve2_radar.cpp has no test -- the entire radar file is untested, which is why its missing parallelism and the FCMA conjugate bug went unnoticed. |
+| HIGH | `no-test-coverage` | `tests/test_vulkan_vector.cpp:19` | The vector tests use N=1000, which is 1000x below OPTMATH_VK_ELTWISE_MIN, so all six 'Vulkan' vector ops return the Eigen CPU fallback — the GPU shaders have zero test coverage and the te... |
+| HIGH | `unmeasured-perf-claim` | `src/cuda/cuda_kernels.cu:1068` | cuda_softmax_f32 routes every realistic problem size to a serial CPU softmax plus two full PCIe round trips, because the GPU path is capped at a single 256-thread block. |
+| HIGH | `unmeasured-perf-claim` | `src/cuda/cuda_radar.cu:811` | cuda_caf's Doppler loop issues five cudaDeviceSynchronize() calls per bin, each justified by a comment asserting a data dependency that CUDA's default-stream ordering already guarantees. |
+| HIGH | `unmeasured-perf-claim` | `src/neon/neon_conv2d.cpp:59` | All six OpenMP regions in the file gate parallelism on out_rows >= 64 alone, ignoring out_cols and kernel size, so wide/large-kernel images with few rows are forced onto one core. |
+| HIGH | `unmeasured-perf-claim` | `src/neon/neon_int8.cpp:38` | The int8 blocking comment claims INT8_MC/INT8_NC 'are capped per K at run time below' — no such capping code exists anywhere in the file. |
+| HIGH | `unmeasured-perf-claim` | `src/neon/neon_kernels.cpp:922` | neon_gemm's fast-path guard uses && across M, N, K, so any single dimension below 64 routes an arbitrarily large GEMM to the naive 4x4 path — and the comment's stated justification for ke... |
+| HIGH | `unmeasured-perf-claim` | `src/neon/neon_linalg.cpp:458` | neon_qr_extract_q_f32 is 100% scalar with a loop-invariant recompute, despite the file header advertising it as one of the "NEON-accelerated" routines — and it dominates the cost of neon_... |
+| HIGH | `unmeasured-perf-claim` | `src/vulkan/vulkan_backend.cpp:874` | OPTMATH_VK_ELTWISE_MIN = 1<<20 is the exact same defect as the just-fixed GEMM threshold: the comment claims V3D never wins at any size, yet the constant switches elementwise ops TO the V... |
+| MEDIUM | `correctness` | `src/cuda/cuda_backend.cpp:706` | CudaFFTPlan::create_1d/create_1d_batch/create_2d accept an `inverse` flag that is discarded, and both execute() overloads hardcode CUFFT_FORWARD, so the cached-plan API cannot perform an ... |
+| MEDIUM | `correctness` | `src/cuda/cuda_kernels.cu:132` | div_ceil takes int but is called with size_t n at 19 sites, narrowing the launch config; combined with missing launch-error checks, oversized vectors silently produce untouched output. |
+| MEDIUM | `correctness` | `src/cuda/cuda_radar.cu:331` | kernel_cfar_ca_1d_f32's leading-window clamp collapses to a single cell at the array head, folding the cell-under-test and its guard cells into their own noise estimate. |
+| MEDIUM | `correctness` | `src/cuda/cuda_radar.cu:1120` | kernel_steering_vectors_batch_f32 is launched with blockDim = n_elements straight from caller input, with no clamp to maxThreadsPerBlock and no launch-error check. |
+| MEDIUM | `correctness` | `src/cuda/cuda_radar.cu:567` | cuda_generate_window silently substitutes a Hamming window for KAISER/GAUSSIAN/TUKEY, ignores the `param` argument entirely, and its GPU and CPU paths disagree for BLACKMAN_HARRIS. |
+| MEDIUM | `correctness` | `src/neon/neon_resample.cpp:41` | neon_resample_init validates nothing: L == 0 divides by zero, and filter_len == 0 produces an empty delay line that the resampler then writes out of bounds. |
+| MEDIUM | `correctness` | `src/neon/neon_resample.cpp:98` | M == 0 makes the output loop non-terminating, and via the unbounded 4-arg overload it writes past the caller's buffer without limit. |
+| MEDIUM | `correctness` | `src/sve2/sve2_kernels.cpp:141` | sve2_div_f32 still injects a sign-preserving epsilon into every denominator, so the same exported function has IEEE-exact semantics on a non-SVE2 build (via neon_div_f32) and epsilon-pert... |
+| MEDIUM | `correctness` | `src/vulkan/vulkan_backend.cpp:1464` | vulkan_reduce_max/_min silently return a[0] instead of the max/min when Vulkan is compiled in but no device is available at runtime, because run_reduction returns its initialVal on the no... |
+| MEDIUM | `no-test-coverage` | `include/optmath/vulkan_backend.hpp:84` | Four exported entry points — vulkan_convolution_2d, vulkan_correlation_1d, vulkan_correlation_2d and the vulkan_conv1d alias — have no test anywhere in tests/. |
+| MEDIUM | `no-test-coverage` | `src/neon/neon_radar.cpp:646` | cfar_os_f32 is an exported kernel with no test, no Eigen wrapper, and no benchmark — the only CFAR variant with zero coverage. |
+| MEDIUM | `no-test-coverage` | `src/neon/neon_radar.cpp:1048` | beamform_phase_f32 and its Eigen wrapper have no correctness test — only a benchmark — despite a hand-written NEON complex multiply-accumulate. |
+| MEDIUM | `no-test-coverage` | `src/neon/neon_radar.cpp:778` | projection_clutter_f32 and its Eigen wrapper have no test and no benchmark, and the wrapper never validates that the subspace matrix's row count matches the signal length. |
+| MEDIUM | `no-test-coverage` | `src/neon/neon_resample.cpp:104` | The output-capacity truncation branch is unreachable in every existing test and from the only in-repo caller, so the documented drop-the-tail semantics are entirely unverified. |
+| MEDIUM | `no-test-coverage` | `src/sve2/sve2_complex.cpp:129` | Both interleaved complex kernels and five other exported complex/vector entry points have no test, leaving the FCMA/non-FCMA branch disagreement invisible. |
+| MEDIUM | `no-test-coverage` | `tests/test_platform.cpp:32` | Every substantive assertion in test_platform.cpp is gated behind 'total_cores == 12' (CIX P1), so on the 4-core Pi 5 the topology, cache, part-ID and feature-flag tests assert nothing. |
+| MEDIUM | `no-test-coverage` | `tests/test_vulkan_matrix.cpp:19` | mat_add/mat_sub are tested at 64x64 = 4096 elements, 256x below OPTMATH_VK_ELTWISE_MIN, so mat_add.comp.spv and mat_sub.comp.spv are never dispatched by any test. |
+| MEDIUM | `unmeasured-perf-claim` | `src/neon/neon_gemm_optimized.cpp:59` | The file header still advertises Pi 5 NC=512 — the exact value platform.cpp documents as the L2-thrashing bug that was fixed — and contradicts itself on the A720 value. |
+| MEDIUM | `unmeasured-perf-claim` | `src/platform/platform.cpp:63` | The file header and the public header both document NC=512 for small-L3 parts; get_gemm_nc() actually returns 256 on the Pi 5. |
+| LOW | `correctness` | `src/neon/neon_linalg.cpp:601` | The neon_qr Eigen wrapper computes std::min(j, m - 1) on unsigned m, so a zero-row input underflows to SIZE_MAX and the R-extraction loop indexes out of bounds. |
+
 
 ---
 

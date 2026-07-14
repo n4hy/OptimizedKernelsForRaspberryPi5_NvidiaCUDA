@@ -1649,6 +1649,37 @@ threaded kernels are verified data-race-free under ThreadSanitizer.**
   missing `.spv` returns empty instead of terminating the caller). Dead
   `*_optimized`/multi-block-scan shaders dropped from the build.
 
+### v0.6.3 — the public GEMM API sent skinny shapes down a naive path (20×)
+
+Found by a 112-agent sweep of every kernel for the patterns behind v0.6.1/v0.6.2.
+**99 raw findings → 42 confirmed, 57 refuted** by independent skeptics. See
+[AUDIT_PLAN.md](AUDIT_PLAN.md) for all 42.
+
+- **Fixed: `neon_gemm` guarded its fast path with `M >= 64 && N >= 64 && K >= 64`.**
+  The `&&` meant **any one** small dimension dropped an arbitrarily large GEMM onto a
+  naive, single-threaded, unpacked 4×4 loop — through the API this README advertises.
+  Measured (idle Pi 5, ABBA-paired, medians) against `neon_gemm_blocked`:
+  **4096×32×4096 → 0.9 vs 20.6 GFLOPS (22.9× slower)**, 63×63×63 → 6.0 vs 41.3,
+  4096×4096×32 → 6.7 vs 12.2. Identical shape to the V3D bug: the guard enabled the
+  slow path exactly where it cost the most. Its stated reason ("avoid packing +
+  thread-fork overhead") was already false — `neon_gemm_blocked` hands `M*N*K < 80³`
+  to Eigen itself. Now always delegates. **4096×32×4096: 0.9 → 18.1 GFLOPS (20×).**
+  The 4×4 path won at exactly one size (8×8×8, a ~150 ns op) and had zero tests.
+- **Fixed: stale `NC=512` in the GEMM header** — the exact value `platform.cpp`
+  documents as the L2-thrashing bug it fixed. Introduced by the v0.6.2 work itself.
+- **Tests + benchmark that would have caught it.** `neon_gemm`'s 4×4 path and the
+  exported `neon_gemm_4x4_f32` had **zero** coverage; the one test calling `neon_gemm`
+  used 64×64×64 — precisely the size taking the other branch. Added both, plus
+  `BM_NEON_GEMM_Public_SmallDim`: **no benchmark could observe this bug**, because
+  every GEMM benchmark swept *square* sizes ≥64, which always satisfy the old guard.
+  Correctness tests couldn't catch it either — the naive path was right, just slow.
+
+> **18 confirmed correctness bugs remain open** across NEON/SVE2/Vulkan/CUDA, and they
+> matter more than any remaining performance work — several return silently wrong
+> answers. Most urgent: `neon_radar.cpp:479`, where `caf()` hands a **column-major**
+> Eigen buffer to a **row-major** writer, scrambling the range-Doppler map. See
+> [AUDIT_PLAN.md](AUDIT_PLAN.md).
+
 ### v0.6.2 — NEON GEMM was running on one core
 
 - **Fixed: `neon_gemm_blocked` was effectively single-threaded.** The

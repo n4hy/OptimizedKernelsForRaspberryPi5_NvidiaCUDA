@@ -55,9 +55,16 @@ namespace neon {
 // - Data packing for contiguous memory access
 // - 8x8 register-blocked microkernel
 //
-// Memory hierarchy targeting:
-// - Cortex-A76 (Pi 5): L2=512KB, L3=2MB → MC=128, KC=256, NC=512
-// - Cortex-A720 (CIX P1): L2=512KB, L3=12MB → MC=256, KC=512, NC=1024
+// Memory hierarchy targeting. MC/KC/NC are NOT constants -- they are computed at
+// run time from the detected cache sizes by platform::get_gemm_mc/kc/nc(), then
+// capped by MC_MAX/KC_MAX/NC_MAX below. Measured on this Pi 5 (A76, L2=512KB,
+// L3=2MB): MC=128, KC=256, NC=256.
+//
+// NC=256, not 512: platform.cpp:432-434 records that NC=512 made the packed-B
+// panel 256*512*4 = 512KB -- the entire L2 -- evicting the A panel and C tiles
+// every pass. It sizes B to ~half of L2 instead (Goto blocking). This header
+// advertised the old 512 long after that fix landed; if you change the blocking,
+// change platform.cpp and re-measure, do not edit this comment to match a guess.
 
 // Runtime-selected cache blocking parameters
 static size_t get_mc() { return platform::get_gemm_mc(); }
