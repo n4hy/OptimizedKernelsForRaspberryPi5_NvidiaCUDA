@@ -1,9 +1,13 @@
 # OptMathKernels Codebase Audit Plan
 
-**Date:** 2026-03-06 (Updated: 2026-03-31, Reviewed: 2026-03-31, Re-audited: 2026-07-08 for v0.5.17)
+**Date:** 2026-03-06 (Updated: 2026-03-31, Reviewed: 2026-03-31, Re-audited: 2026-07-08 for v0.5.17, 2026-07-14 for v0.6.1–v0.6.2)
 **Auditor:** Claude Code
 **Scope:** Full codebase audit for errors, bugs, and optimization opportunities
 
+> **See the [July 2026 Performance Re-Audit (v0.6.1–v0.6.2)](#july-2026-performance-re-audit-v061v062) section**
+> for the two performance defects found by measurement on real Pi 5 hardware, the
+> recurring patterns that produced them, and the open items with measured numbers.
+>
 > **See the [July 2026 Re-Audit (v0.5.17)](#july-2026-re-audit-v0517) section below** for the
 > current verified status of the open items and newly-found defects in the CUDA-13-era code.
 
@@ -25,6 +29,48 @@ Comprehensive audit of 56+ source files revealed **37 issues** across severity l
 | `98f463a` | Fix numerical stability, error handling, and platform test portability |
 | `4f784eb` | v0.5.2: Fix critical bugs across SVE2, CUDA, Vulkan, NEON, and platform backends |
 | v0.5.7 | SVE2 pipeline optimization: inline transcendentals, vectorize GEMM microkernel, vectorize CAF Doppler shift |
+
+---
+
+## July 2026 Performance Re-Audit (v0.6.1–v0.6.2)
+
+Audit driven by **measurement on real Pi 5 hardware** (Cortex-A76 ×4, V3D), not static
+reading. Both defects below had passed every test suite for months — **they only cost
+speed, and nothing measured speed.** Landed as `fd41460` (v0.6.1) and `5e2cc6d` (v0.6.2);
+18/18 suites pass.
+
+### Defects found and fixed
+
+| ID | Sev | File:line | Defect | Fix |
+|----|-----|-----------|--------|-----|
+| P1 | HIGH | `vulkan_backend.cpp:863` | `vulkan_mat_mul` offloaded GEMM to the V3D above `M*N*K >= 256^3`, where the shader measures **24–51× slower** than Eigen. The cutoff switched to the GPU at exactly the size the GPU became catastrophic, so every caller at N≥256 silently paid. The comment asserting "the GPU only pays off for large, compute-heavy GEMM" was never measured. | `MatMulBackend{Auto,Gpu,Cpu}` + `matmul_gpu_preferred()`; `Auto` keeps GEMM on the CPU for Broadcom V3D. **41× at N=512.** |
+| P2 | HIGH | `neon_gemm_optimized.cpp:266` | `#pragma omp parallel for` sat on the `jc` loop, which steps by `NC` (=256 on a Pi 5). A 256×256 GEMM produced **one block** → one A76 ran it, three idled. Scaling at N=256 was **32.0 / 32.0 / 29.2 GFLOPS at 1 / 2 / 4 threads — none**. N=512 got two blocks, so 4 threads *lost* to 2 (43.4 vs 54.0). | Parallelism moved to the `(jr, ir)` tile grid; one region per `jc`; packing and C zero-fill parallelized. **29.2 → ~90–116 GFLOPS; scaling 1.0× → 3.69×.** |
+| P3 | MED | `bench_common.hpp` | Every benchmark rate counter divided by **CPU time**, not wall time (google/benchmark default; needs `->UseRealTime()`). `BM_Vulkan_MatMul/1024` reported **244 GFLOPS** — more than the entire CPU can do, on a far weaker GPU — while really running ~2 GFLOPS. OpenMP GEMM was overstated ~17%. | `->UseRealTime()` on all GPU/OpenMP benchmarks; pitfall documented in `bench_common.hpp`. |
+| P4 | MED | `tests/` | **GEMM had no dedicated test suite** — which is precisely how P2 survived. | New `test_neon_gemm` (18 suites): ragged edge tiles, both sides of the Eigen/NEON dispatch boundary, determinism across thread counts. |
+
+### Recurring patterns — what to grep for next
+
+Both P1 and P2 came from the same two shapes. Treat these as audit triggers:
+
+1. **A performance claim in a comment with no measurement next to it.** P1's threshold
+   was justified by an unmeasured assertion that was wrong by 24–51×. Any tuning
+   constant, offload threshold, or backend choice defended only by prose is a suspect.
+2. **A kernel with no dedicated test.** A wrong-but-fast kernel fails tests; a
+   correct-but-slow one passes forever. P2 lived through every green run.
+3. **An `omp parallel for` whose loop may have ~1 iteration at realistic sizes.**
+   Check the *step* against the platform's blocking parameters, not just the bound.
+
+~20 kernels in `src/` have not been swept for these. Static discovery parallelizes well;
+the measurement afterwards does not (see the benchmarking note in the README — one
+process measures at a time on a 4-core Pi).
+
+### Open items (measured, not fixed)
+
+| # | Item | Measured | Note |
+|---|------|----------|------|
+| P5 | `neon_gemm_blocked` skinny/non-square shapes | 512×64×256 → ~62–75 GFLOPS vs ~117 for square at N=256 | Likely wants different blocking, a skinny microkernel, or an Eigen hand-off. Undecided — worth planning before coding. |
+| P6 | `neon_mat_vec_mul` past L3 | N=2048 → **778 MFLOP/s** (~1.4 GB/s effective) vs ~4 GB/s for a pure NEON stream | Memory-bound as expected, but ~2.7× off streaming. `Eigen_Dot` hits the same wall, so the ceiling is real — the 2.7× gap may not be. |
+| P7 | Large-N GEMM scaling | N=2048: 28.1 / 48.5 / 59.6 GFLOPS at 1/2/4 threads (2.12×) | LPDDR4X-bound past N≈512; same reason the int8 SDOT path saturates after ~2 cores. Probably at the hardware limit. |
 
 ---
 

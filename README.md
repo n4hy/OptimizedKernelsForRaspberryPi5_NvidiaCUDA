@@ -1816,6 +1816,27 @@ are unavailable (the barrier-tree reductions are retained); and it lacks
 possible (hence the buffer pool above). `shaderFloat16` is also unsupported on
 V3D, so FP16 is a CPU/NEON feature only on this platform.
 
+### Known performance gaps (measured, not yet fixed)
+
+Open as of v0.6.2. Numbers are medians on an idle Pi 5; see
+[AUDIT_PLAN.md](AUDIT_PLAN.md) for the full audit trail.
+
+| Item | Measured | Assessment |
+|------|----------|------------|
+| `neon_gemm_blocked` on skinny / non-square shapes | 512×64×256 → **~62–75 GFLOP/s**, vs ~117 for square at N=256 | Likely wants different blocking, a dedicated skinny microkernel, or an Eigen hand-off like the small-N path. Not yet investigated. |
+| `neon_mat_vec_mul` past L3 | N=2048 → **778 MFLOP/s** (~1.4 GB/s effective) vs ~4 GB/s for a pure NEON stream | Memory-bound by nature, but ~2.7× off streaming. `Eigen_Dot` hits the same wall at the same sizes, so part of this ceiling is the LPDDR4X bus, not the kernel. |
+| GEMM scaling past N≈512 | N=2048: 28.1 / 48.5 / **59.6 GFLOP/s** at 1/2/4 threads (2.12×) | Bus-bound, not core-bound — the same reason the int8 SDOT path saturates after ~2 cores. Probably at the hardware limit. |
+
+**Two patterns worth grepping for** — both defects fixed in v0.6.1/v0.6.2 came from
+them, and neither is caught by tests:
+
+1. **A performance claim in a comment with no measurement beside it.** The V3D GEMM
+   offload threshold was justified by an unmeasured assertion ("the GPU only pays off
+   for large, compute-heavy GEMM") that was wrong by 24–51×.
+2. **A kernel with no dedicated test.** A wrong-but-fast kernel fails tests; a
+   correct-but-slow one passes forever. `neon_gemm_blocked` ran on one of four cores
+   through every green test run until someone finally benchmarked it.
+
 ---
 
 ### v0.5.17 - Raspberry Pi 5 Build & Full Test-Suite Pass (July 2026)
