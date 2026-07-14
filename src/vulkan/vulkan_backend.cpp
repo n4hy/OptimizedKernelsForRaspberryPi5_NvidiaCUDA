@@ -857,8 +857,20 @@ bool is_available() {
 // / fence, a single dispatch carries ~2.9 ms of fixed submit + buffer-map/copy
 // overhead. For memory-bound elementwise/dot ops the V3D never beats the 4x A76
 // at any size that fits memory, so the elementwise threshold is set high (these
-// effectively always run on the CPU here). The GPU only pays off for large,
-// compute-heavy GEMM. Tune per board; a stronger discrete GPU wants lower values.
+// effectively always run on the CPU here). Tune per board; a stronger discrete
+// GPU wants lower values.
+//
+// GEMM does NOT pay off on V3D either. An earlier revision claimed "the GPU only
+// pays off for large, compute-heavy GEMM" and set the threshold at 256^3; that
+// was never measured, and it is wrong. vulkan_mat_mul vs Eigen, wall clock, Pi 5
+// idle (build/benchmarks + a direct A/B):
+//     N=256   16.4 ms vs  0.32 ms   -> 51x SLOWER
+//     N=512  135.8 ms vs  6.09 ms   -> 24x SLOWER
+//     N=1024 1108.8 ms vs 29.9 ms   -> 37x SLOWER
+// The threshold therefore switched to the GPU at exactly the point the GPU
+// became catastrophically slower. V3D is now excluded via MatMulBackend::Auto
+// (see matmul_gpu_preferred) rather than by a size cutoff; the cutoff below
+// still gates devices where offload is worthwhile at all.
 static constexpr size_t OPTMATH_VK_ELTWISE_MIN = 1u << 20;  // ~1M elements
 static constexpr size_t OPTMATH_VK_MATMUL_MIN  = 256ull * 256 * 256;  // M*N*K
 
@@ -1063,14 +1075,29 @@ Eigen::MatrixXf vulkan_mat_sub(const Eigen::MatrixXf& a, const Eigen::MatrixXf& 
     } catch (const std::exception&) { return Eigen::MatrixXf(); }
 }
 
+// --- GEMM backend selection ---
+static MatMulBackend g_matmulBackend = MatMulBackend::Auto;
+void set_matmul_backend(MatMulBackend b) { g_matmulBackend = b; }
+MatMulBackend get_matmul_backend() { return g_matmulBackend; }
+
+bool matmul_gpu_preferred() {
+    if (g_matmulBackend == MatMulBackend::Cpu) return false;
+    if (!is_available()) return false;
+    if (g_matmulBackend == MatMulBackend::Gpu) return true;
+    // Auto: V3D loses to the NEON CPU path at every size (see the note above).
+    return !VulkanContext::get().isBroadcomGpu;
+}
+
 Eigen::MatrixXf vulkan_mat_mul(const Eigen::MatrixXf& a, const Eigen::MatrixXf& b) {
     if (a.size() == 0 || b.size() == 0 || a.cols() != b.rows()) return Eigen::MatrixXf();
-    // GEMM on V3D must overcome map->copy->submit->wait->copy-back over the
-    // shared bus, so it only wins for large M*N*K. Below that, the CPU (Eigen,
-    // which is itself NEON-vectorized) is faster.
+    // GEMM on the GPU must overcome map->copy->submit->wait->copy-back over the
+    // shared bus. Where that never wins (V3D), or below the size cutoff, use the
+    // CPU (Eigen, which is itself NEON-vectorized). Same result either way.
     {
         size_t work = (size_t)a.rows() * (size_t)b.cols() * (size_t)a.cols();
-        if (work < OPTMATH_VK_MATMUL_MIN || !is_available()) return a * b;
+        bool force_gpu = (g_matmulBackend == MatMulBackend::Gpu) && is_available();
+        if (!force_gpu && (work < OPTMATH_VK_MATMUL_MIN || !matmul_gpu_preferred()))
+            return a * b;
     }
 
     // A: MxK, B: KxN -> C: MxN
@@ -1589,6 +1616,9 @@ Eigen::MatrixXf vulkan_correlation_2d(const Eigen::MatrixXf&, const Eigen::Matri
 
 void set_reduce_backend(ReduceBackend) {}
 ReduceBackend get_reduce_backend() { return ReduceBackend::Auto; }
+void set_matmul_backend(MatMulBackend) {}
+MatMulBackend get_matmul_backend() { return MatMulBackend::Auto; }
+bool matmul_gpu_preferred() { return false; }
 bool subgroup_reduce_available() { return false; }
 float vulkan_reduce_sum(const Eigen::VectorXf&) { return 0.0f; }
 float vulkan_reduce_max(const Eigen::VectorXf&) { return 0.0f; }

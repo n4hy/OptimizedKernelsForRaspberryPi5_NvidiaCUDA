@@ -63,7 +63,7 @@ void run(benchmark::State& state, ReduceBackend backend) {
 static void BM_ReduceSum_BarrierTree(benchmark::State& s) { run(s, ReduceBackend::BarrierTree); }
 static void BM_ReduceSum_Subgroup(benchmark::State& s)    { run(s, ReduceBackend::Subgroup); }
 
-BENCHMARK(BM_ReduceSum_BarrierTree)->RangeMultiplier(8)->Range(1024, 4194304);
-BENCHMARK(BM_ReduceSum_Subgroup)->RangeMultiplier(8)->Range(1024, 4194304);
+BENCHMARK(BM_ReduceSum_BarrierTree)->RangeMultiplier(8)->Range(1024, 4194304)->UseRealTime();
+BENCHMARK(BM_ReduceSum_Subgroup)->RangeMultiplier(8)->Range(1024, 4194304)->UseRealTime();
 
 BENCHMARK_MAIN();

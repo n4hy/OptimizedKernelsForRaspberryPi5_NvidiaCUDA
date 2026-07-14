@@ -743,12 +743,27 @@ class VulkanContext {
 |----------|-------------|------------|-------------|
 | `vulkan_mat_add` | `Eigen::MatrixXf` | `const Eigen::MatrixXf& a, const Eigen::MatrixXf& b` | Matrix addition |
 | `vulkan_mat_sub` | `Eigen::MatrixXf` | `const Eigen::MatrixXf& a, const Eigen::MatrixXf& b` | Matrix subtraction |
-| `vulkan_mat_mul` | `Eigen::MatrixXf` | `const Eigen::MatrixXf& a, const Eigen::MatrixXf& b` | Matrix multiplication (16x16 tiled) |
+| `vulkan_mat_mul` | `Eigen::MatrixXf` | `const Eigen::MatrixXf& a, const Eigen::MatrixXf& b` | Matrix multiplication (16x16 tiled). Backend chosen by `set_matmul_backend`; on Pi 5 / V3D `Auto` runs on the CPU (the shader is 24–51× slower there) |
 | `vulkan_mat_transpose` | `Eigen::MatrixXf` | `const Eigen::MatrixXf& a` | Transpose |
 | `vulkan_mat_scale` | `Eigen::MatrixXf` | `const Eigen::MatrixXf& a, float scalar` | Scalar multiply |
 | `vulkan_mat_vec_mul` | `Eigen::VectorXf` | `const Eigen::MatrixXf& a, const Eigen::VectorXf& v` | Matrix-vector multiply |
 | `vulkan_mat_outer_product` | `Eigen::MatrixXf` | `const Eigen::VectorXf& u, const Eigen::VectorXf& v` | Outer product |
 | `vulkan_mat_elementwise_mul` | `Eigen::MatrixXf` | `const Eigen::MatrixXf& a, const Eigen::MatrixXf& b` | Element-wise multiply |
+
+#### GEMM backend selection
+
+Selects **where** `vulkan_mat_mul` runs. Results are identical on every path.
+
+| Function | Return Type | Parameters | Description |
+|----------|-------------|------------|-------------|
+| `set_matmul_backend` | `void` | `MatMulBackend b` | `Auto` (default), `Gpu` (force shader), `Cpu` (force Eigen) |
+| `get_matmul_backend` | `MatMulBackend` | — | Current selection |
+| `matmul_gpu_preferred` | `bool` | — | Whether `Auto` would offload GEMM on this device (**false** on Pi 5 / V3D) |
+
+`Auto` offloads only where the GPU beats the host CPU by more than the
+map → copy → submit → wait → copy-back round trip. The Pi 5's V3D never does — measured
+24–51× slower than Eigen at N=256…1024 — so `Auto` keeps GEMM on the CPU there and
+offloads on other GPUs above `M*N*K >= 256^3`.
 
 ---
 

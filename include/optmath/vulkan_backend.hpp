@@ -93,6 +93,18 @@ namespace vulkan {
     ReduceBackend get_reduce_backend();
     bool subgroup_reduce_available();
 
+    // GEMM backend selection for vulkan_mat_mul.
+    // Auto: offload only where the GPU actually wins. On Broadcom V3D (Pi 5) the
+    // tiled GEMM shader measures 24-51x SLOWER than Eigen's NEON path at every
+    // size that fits memory, so Auto keeps GEMM on the CPU there. Gpu forces the
+    // shader (for A/B benchmarking); Cpu forces Eigen. Results are identical
+    // either way -- this only selects where the work runs.
+    enum class MatMulBackend { Auto, Gpu, Cpu };
+    void set_matmul_backend(MatMulBackend b);
+    MatMulBackend get_matmul_backend();
+    // True when Auto would offload GEMM to the GPU on this device.
+    bool matmul_gpu_preferred();
+
     // Reductions & Scan
     float vulkan_reduce_sum(const Eigen::VectorXf& a);
     float vulkan_reduce_max(const Eigen::VectorXf& a);

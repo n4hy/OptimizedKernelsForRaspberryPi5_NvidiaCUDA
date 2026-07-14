@@ -27,7 +27,7 @@ static void BM_NEON_GEMM_4x4(benchmark::State& state) {
 
     bench::set_flops(state, bench::gemm_flops(4, 4, K));
 }
-BENCHMARK(BM_NEON_GEMM_4x4)->RangeMultiplier(2)->Range(16, 1024);
+BENCHMARK(BM_NEON_GEMM_4x4)->RangeMultiplier(2)->Range(16, 1024)->UseRealTime();
 
 // Benchmark: Simple tiled GEMM (existing implementation)
 static void BM_NEON_GEMM_Simple(benchmark::State& state) {
@@ -48,7 +48,7 @@ static void BM_NEON_GEMM_Simple(benchmark::State& state) {
 
     bench::set_flops(state, bench::gemm_flops(N, N, N));
 }
-BENCHMARK(BM_NEON_GEMM_Simple)->RangeMultiplier(2)->Range(32, 512);
+BENCHMARK(BM_NEON_GEMM_Simple)->RangeMultiplier(2)->Range(32, 512)->UseRealTime();
 
 // Benchmark: Optimized blocked GEMM
 static void BM_NEON_GEMM_Blocked(benchmark::State& state) {
@@ -69,7 +69,7 @@ static void BM_NEON_GEMM_Blocked(benchmark::State& state) {
 
     bench::set_flops(state, bench::gemm_flops(N, N, N));
 }
-BENCHMARK(BM_NEON_GEMM_Blocked)->RangeMultiplier(2)->Range(32, 512);
+BENCHMARK(BM_NEON_GEMM_Blocked)->RangeMultiplier(2)->Range(32, 512)->UseRealTime();
 
 // Benchmark: Compare with Eigen
 static void BM_Eigen_GEMM(benchmark::State& state) {
@@ -85,7 +85,7 @@ static void BM_Eigen_GEMM(benchmark::State& state) {
 
     bench::set_flops(state, bench::gemm_flops(N, N, N));
 }
-BENCHMARK(BM_Eigen_GEMM)->RangeMultiplier(2)->Range(32, 512);
+BENCHMARK(BM_Eigen_GEMM)->RangeMultiplier(2)->Range(32, 512)->UseRealTime();
 
 // Benchmark: Non-square matrices
 static void BM_NEON_GEMM_Blocked_MNK(benchmark::State& state) {
@@ -112,7 +112,8 @@ static void BM_NEON_GEMM_Blocked_MNK(benchmark::State& state) {
 BENCHMARK(BM_NEON_GEMM_Blocked_MNK)
     ->Args({128, 256, 64})
     ->Args({256, 128, 512})
-    ->Args({512, 64, 256});
+    ->Args({512, 64, 256})
+    ->UseRealTime();
 
 // Benchmark: Matrix-vector multiplication
 static void BM_NEON_MatVec(benchmark::State& state) {
@@ -134,6 +135,6 @@ static void BM_NEON_MatVec(benchmark::State& state) {
     // 2*N*N flops for mat-vec
     bench::set_flops(state, 2.0 * N * N);
 }
-BENCHMARK(BM_NEON_MatVec)->RangeMultiplier(2)->Range(64, 2048);
+BENCHMARK(BM_NEON_MatVec)->RangeMultiplier(2)->Range(64, 2048)->UseRealTime();
 
 BENCHMARK_MAIN();

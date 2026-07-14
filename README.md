@@ -140,7 +140,9 @@ project, providing hardware-accelerated kernels for:
 
 ### GPU Acceleration (`optmath::vulkan`)
 
-- **Tiled GPU Matrix Multiply**: 16x16 shared memory tiles (default), 32x32 tiles for Mali-G720
+- **Tiled GPU Matrix Multiply**: 16x16 shared memory tiles (default), 32x32 tiles for Mali-G720.
+  Note: on the Pi 5's V3D this shader is **24–51× slower than the CPU**, so `vulkan_mat_mul`
+  runs GEMM on the CPU there by default — see [GEMM backend selection](#gemm-backend-selection)
 - **FFT**: Radix-2/4 FFT with butterfly operations in compute shaders
 - **Convolution**: 1D and 2D convolution with separable kernel optimization
 - **Vector Operations**: Add, multiply, dot product, reductions
@@ -336,6 +338,40 @@ cat /proc/cpuinfo | grep avx2
 | **Qualcomm** | Adreno 6xx+ | 1.1 | Proprietary |
 
 > **Vulkan on RTX 50xx**: The Vulkan backend provides full GPU acceleration on Blackwell GPUs regardless of CUDA toolkit version. This is a good fallback when CUDA 12.8+ is not available.
+
+#### GEMM backend selection
+
+`vulkan_mat_mul` picks where GEMM runs. A GPU only wins if it can beat the host CPU by
+more than the map → copy → submit → wait → copy-back round trip, and on the Pi 5 the V3D
+never does — not even for large GEMM, which is the workload GPUs are supposed to win.
+So `Auto` keeps GEMM on the CPU for Broadcom V3D and offloads elsewhere (above
+`M*N*K >= 256^3`). Results are identical on every path; this only selects *where* the
+work runs.
+
+```cpp
+#include <optmath/vulkan_backend.hpp>
+using namespace optmath::vulkan;
+
+// Default: Auto. On the Pi 5 this keeps GEMM on the 4x A76 (41x faster than the V3D).
+Eigen::MatrixXf C = vulkan_mat_mul(A, B);
+
+bool on_gpu = matmul_gpu_preferred();   // false on Pi 5 / V3D
+
+set_matmul_backend(MatMulBackend::Gpu); // force the shader (A/B benchmarking)
+set_matmul_backend(MatMulBackend::Cpu); // force Eigen
+set_matmul_backend(MatMulBackend::Auto);
+```
+
+Measured on an idle Pi 5 (wall clock, `vulkan_mat_mul` vs Eigen):
+
+| N | V3D shader (`Gpu`) | CPU (`Auto`/`Cpu`) | Auto speedup |
+|---|--------------------|--------------------|--------------|
+| 256 | 16.4 ms | **0.38 ms** | **43×** |
+| 512 | 135.8 ms | **3.32 ms** | **41×** |
+| 1024 | 1108.8 ms | **28.2 ms** | **39×** |
+
+If you port this to a board with a stronger GPU, re-measure before lowering the
+thresholds — and measure on an **idle** machine (see the benchmarking note below).
 
 **VideoCore VII (Raspberry Pi 5)**:
 | Feature | Specification |
@@ -1014,8 +1050,57 @@ Radix-2 FFT + precomputed twiddles for power-of-two sizes; a direct DFT remains 
 | **Lane-batched biquad** (`neon_biquad_x4_f32`) | 4 channels × 100K samples | **2.0×** vs 4 scalar passes (exact match) |
 | **Vulkan `vec_add`** (offload threshold) | 70K elements | **0.27 ms** (routed to CPU) vs ~2.9 ms if forced to the V3D GPU |
 | Vulkan per-dispatch overhead | cached pool/cmd-buffer/fence | **4.76 → 2.89 ms** |
+| **`vulkan_mat_mul`** (GEMM offload, **fixed in v0.6.1**) | 512×512 | **3.3 ms** (routed to CPU) vs **135.8 ms** on the V3D — **41× faster** |
 
-On the Pi 5 the 4× A76 CPU beats the V3D GPU for elementwise/memory-bound work at every size that fits memory, so the offload thresholds keep that work on the CPU; the GPU path remains available (and correct) for large, compute-heavy problems.
+On the Pi 5 the 4× A76 CPU beats the V3D GPU for **every** kernel here — elementwise,
+memory-bound, *and* compute-heavy GEMM — at every size that fits memory. The offload
+thresholds keep that work on the CPU.
+
+> **Correction (v0.6.1).** Earlier releases claimed the GPU "pays off for large,
+> compute-heavy GEMM" and offloaded `vulkan_mat_mul` above `M*N*K >= 256^3`. That was
+> never measured, and it was wrong. Measured on an idle Pi 5, `vulkan_mat_mul` vs Eigen
+> (wall clock): **N=256 → 51× slower, N=512 → 24× slower, N=1024 → 37× slower.** The
+> threshold switched to the GPU at precisely the size where the GPU became catastrophically
+> slower, so every caller at N≥256 silently paid 24–51×. `MatMulBackend::Auto` now keeps
+> GEMM on the CPU for Broadcom V3D. See [GEMM backend selection](#gemm-backend-selection).
+
+#### Benchmarking on the Pi 5 — two traps
+
+Both of these produced confidently wrong numbers during the v0.6.1 audit. Read this
+before trusting any measurement from this repo.
+
+**1. Rate counters divide by CPU time, not wall time.** google/benchmark computes every
+rate counter (`FLOPS`, `bytes_per_second`, …) against `cpu_time` unless the benchmark is
+registered `->UseRealTime()` (`benchmark_runner.cc`: `i.seconds = i.results.cpu_time_used;`).
+That default is wrong whenever the calling thread isn't doing the work:
+
+- **GPU**: the CPU blocks at the fence while the GPU computes, so `cpu_time` collapses.
+  `BM_Vulkan_MatMul/1024` reported **244 GFLOPS** — more than the entire 4× A76 CPU can
+  do, on a GPU far weaker than it — while actually taking **1.1 s** of wall clock (~2 GFLOPS).
+- **OpenMP**: `cpu_time` tracks the main thread only, overstating a 4-thread GEMM by ~17%.
+
+All GPU and OpenMP-parallel benchmarks here now use `->UseRealTime()` (their names show a
+`/real_time` suffix). If you add one, do the same.
+
+**2. A single busy core wrecks everything.** With 4 OpenMP threads on 4 cores, one
+competing process oversubscribes the machine and inverts results. During this audit a
+background job (a GOES satellite image worker) held one core, which made:
+
+- blocked GEMM look **3× slower** than naive GEMM (it isn't — they're within noise),
+- `Eigen_GEMM/64` take **2,655,087 ns**; idle, the same benchmark takes **11,821 ns** — a
+  **149× artifact** that looks exactly like a catastrophic OpenMP bug, and isn't.
+
+Before benchmarking: stop competing services, then confirm the machine is actually idle
+and not thermally capped.
+
+```bash
+uptime                          # load average should be < ~0.5
+ps -eo pcpu,pid,comm --sort=-pcpu | head -5
+vcgencmd measure_temp           # sustained load climbs; throttling starts ~80-85'C
+vcgencmd get_throttled          # MUST be 0x0 -- anything else invalidates the run
+vcgencmd measure_clock arm      # expect ~2.4 GHz on a Pi 5
+cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor   # 'performance'
+```
 
 #### Test Results (Raspberry Pi 5 — 17/17 Suites Pass)
 
@@ -1537,6 +1622,24 @@ threaded kernels are verified data-race-free under ThreadSanitizer.**
   overhead 4.76 → 2.89 ms) + crash-guard fallback on **every** GPU wrapper (a
   missing `.spv` returns empty instead of terminating the caller). Dead
   `*_optimized`/multi-block-scan shaders dropped from the build.
+
+### v0.6.1 — GEMM offload fix + honest benchmark reporting
+
+- **Fixed: `vulkan_mat_mul` offloaded GEMM to the V3D, where it is 24–51× slower.**
+  The `M*N*K >= 256^3` threshold turned the GPU on at exactly the size it became
+  catastrophically slower, so every caller at N≥256 silently paid 24–51× (N=512:
+  135.8 ms vs 3.3 ms on the CPU). The old comment claiming the GPU "pays off for
+  large, compute-heavy GEMM" was never measured. New `MatMulBackend{Auto,Gpu,Cpu}`
+  + `set_matmul_backend()` / `matmul_gpu_preferred()`; `Auto` keeps GEMM on the CPU
+  for Broadcom V3D and still offloads on other GPUs. **41× faster at N=512**, results
+  bit-identical. Covered by `VulkanMatrix.MatMulBackendsAgree` and
+  `VulkanMatrix.AutoDoesNotOffloadGemmOnV3D`.
+- **Fixed: benchmarks reported rates against CPU time**, so `BM_Vulkan_MatMul/1024`
+  claimed **244 GFLOPS** while really running at ~2 GFLOPS (a 125× overstatement —
+  and more than the whole CPU can do). GPU and OpenMP-parallel benchmarks now use
+  `->UseRealTime()`; the pitfall is documented in `benchmarks/bench_common.hpp`.
+- **Docs**: added *Benchmarking on the Pi 5 — two traps* (the CPU-time counter
+  default, and how one busy core fabricates a 149× "OpenMP bug" that doesn't exist).
 - **Build**: `-mcpu=native` (already present) plus `-fno-math-errno` /
   `-fno-semantic-interposition` (IEEE-preserving); runtime `has_dotprod` /
   `has_fp16` capability detection; `ENABLE_CUDA` defaults off on ARM.

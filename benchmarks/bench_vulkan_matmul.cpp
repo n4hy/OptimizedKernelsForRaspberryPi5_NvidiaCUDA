@@ -25,7 +25,7 @@ static void BM_Vulkan_MatMul(benchmark::State& state) {
 
     bench::set_flops(state, bench::gemm_flops(N, N, N));
 }
-BENCHMARK(BM_Vulkan_MatMul)->RangeMultiplier(2)->Range(64, 1024);
+BENCHMARK(BM_Vulkan_MatMul)->RangeMultiplier(2)->Range(64, 1024)->UseRealTime();
 
 // Benchmark: Vulkan vector operations
 static void BM_Vulkan_VecAdd(benchmark::State& state) {
@@ -46,7 +46,7 @@ static void BM_Vulkan_VecAdd(benchmark::State& state) {
 
     bench::set_bytes_processed(state, 3 * N * sizeof(float));  // Read 2, write 1
 }
-BENCHMARK(BM_Vulkan_VecAdd)->RangeMultiplier(4)->Range(1024, 4194304);
+BENCHMARK(BM_Vulkan_VecAdd)->RangeMultiplier(4)->Range(1024, 4194304)->UseRealTime();
 
 // Benchmark: Vulkan vector multiplication
 static void BM_Vulkan_VecMul(benchmark::State& state) {
@@ -67,7 +67,7 @@ static void BM_Vulkan_VecMul(benchmark::State& state) {
 
     bench::set_bytes_processed(state, 3 * N * sizeof(float));
 }
-BENCHMARK(BM_Vulkan_VecMul)->RangeMultiplier(4)->Range(1024, 4194304);
+BENCHMARK(BM_Vulkan_VecMul)->RangeMultiplier(4)->Range(1024, 4194304)->UseRealTime();
 
 // Benchmark: Vulkan dot product
 static void BM_Vulkan_VecDot(benchmark::State& state) {
@@ -88,7 +88,7 @@ static void BM_Vulkan_VecDot(benchmark::State& state) {
 
     bench::set_flops(state, 2.0 * N);  // N muls + N-1 adds
 }
-BENCHMARK(BM_Vulkan_VecDot)->RangeMultiplier(4)->Range(1024, 4194304);
+BENCHMARK(BM_Vulkan_VecDot)->RangeMultiplier(4)->Range(1024, 4194304)->UseRealTime();
 
 // Benchmark: Vulkan reduction
 static void BM_Vulkan_ReduceSum(benchmark::State& state) {
@@ -108,7 +108,7 @@ static void BM_Vulkan_ReduceSum(benchmark::State& state) {
 
     bench::set_flops(state, static_cast<double>(N));
 }
-BENCHMARK(BM_Vulkan_ReduceSum)->RangeMultiplier(4)->Range(1024, 4194304);
+BENCHMARK(BM_Vulkan_ReduceSum)->RangeMultiplier(4)->Range(1024, 4194304)->UseRealTime();
 
 // Benchmark: Vulkan prefix sum
 static void BM_Vulkan_PrefixSum(benchmark::State& state) {
@@ -128,7 +128,7 @@ static void BM_Vulkan_PrefixSum(benchmark::State& state) {
 
     bench::set_flops(state, static_cast<double>(N));
 }
-BENCHMARK(BM_Vulkan_PrefixSum)->RangeMultiplier(2)->Range(256, 4096);
+BENCHMARK(BM_Vulkan_PrefixSum)->RangeMultiplier(2)->Range(256, 4096)->UseRealTime();
 
 // Benchmark: Vulkan 1D convolution
 static void BM_Vulkan_Conv1D(benchmark::State& state) {
@@ -155,7 +155,8 @@ BENCHMARK(BM_Vulkan_Conv1D)
     ->Args({4096, 16})
     ->Args({16384, 32})
     ->Args({65536, 64})
-    ->Args({262144, 128});
+    ->Args({262144, 128})
+    ->UseRealTime();
 
 // Benchmark: Vulkan 2D convolution
 static void BM_Vulkan_Conv2D(benchmark::State& state) {
@@ -182,7 +183,8 @@ BENCHMARK(BM_Vulkan_Conv2D)
     ->Args({128, 3})
     ->Args({256, 5})
     ->Args({512, 7})
-    ->Args({1024, 3});
+    ->Args({1024, 3})
+    ->UseRealTime();
 
 // Benchmark: Matrix transpose
 static void BM_Vulkan_MatTranspose(benchmark::State& state) {
@@ -202,6 +204,6 @@ static void BM_Vulkan_MatTranspose(benchmark::State& state) {
 
     bench::set_bytes_processed(state, 2 * N * N * sizeof(float));
 }
-BENCHMARK(BM_Vulkan_MatTranspose)->RangeMultiplier(2)->Range(64, 2048);
+BENCHMARK(BM_Vulkan_MatTranspose)->RangeMultiplier(2)->Range(64, 2048)->UseRealTime();
 
 BENCHMARK_MAIN();
