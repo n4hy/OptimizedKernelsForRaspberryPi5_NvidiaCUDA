@@ -1021,8 +1021,15 @@ The int8 dot-product path (`vdotq_s32`) is the headline win — near SDOT peak a
 | **int8 SDOT GEMM** | 256 | 1 | **108 GOP/s** | L2-resident |
 | **int8 SDOT GEMM** | 512 | 1 | **90 GOP/s** | ≈ 7× the fp32 GEMM |
 | **int8 SDOT GEMM** | 1024 | 1 / 2 | 53 / **104 GOP/s** | bandwidth-bound past 2 cores |
-| fp32 Blocked GEMM (`neon_gemm`) | 512 | 1 | ~13.8 GFLOP/s | routed to blocked 8×8 path |
-| fp32 Blocked GEMM | 2048 | 1 / 2 / 4 | 8.9 / 17.4 / **22.3 GFLOP/s** | ~2.5× threaded |
+| fp32 Blocked GEMM (`neon_gemm`) | 512 | 1 | **29.8 GFLOP/s** | routed to blocked 8×8 path |
+| fp32 Blocked GEMM | 512 | 1 / 2 / 4 | 29.8 / 53.7 / **72.3 GFLOP/s** | 2.42× threaded (v0.6.2) |
+| fp32 Blocked GEMM | 2048 | 1 / 2 / 4 | 28.1 / 48.5 / **59.6 GFLOP/s** | 2.12× — LPDDR4X-bound |
+
+fp32 GEMM numbers are **v0.6.2**, after the threading fix; before it the kernel ran
+on one core regardless of `OMP_NUM_THREADS` (N=256 measured 32.0 / 32.0 / 29.2 at
+1 / 2 / 4 threads). Peak scaling is **3.69× at N=256** (117 GFLOP/s, 76% of the
+4-core 153.6 GFLOP/s FP32 peak); past N≈512 the shared LPDDR4X bus, not the cores,
+is the limit — which is also why the int8 path above saturates after ~2 cores.
 
 #### Multi-core threading (OpenMP, 4× Cortex-A76)
 
@@ -1064,10 +1071,10 @@ thresholds keep that work on the CPU.
 > slower, so every caller at N≥256 silently paid 24–51×. `MatMulBackend::Auto` now keeps
 > GEMM on the CPU for Broadcom V3D. See [GEMM backend selection](#gemm-backend-selection).
 
-#### Benchmarking on the Pi 5 — two traps
+#### Benchmarking on the Pi 5 — three traps
 
-Both of these produced confidently wrong numbers during the v0.6.1 audit. Read this
-before trusting any measurement from this repo.
+All of these produced confidently wrong numbers during the v0.6.1/v0.6.2 work. Read
+this before trusting any measurement from this repo.
 
 **1. Rate counters divide by CPU time, not wall time.** google/benchmark computes every
 rate counter (`FLOPS`, `bytes_per_second`, …) against `cpu_time` unless the benchmark is
@@ -1089,6 +1096,25 @@ background job (a GOES satellite image worker) held one core, which made:
 - blocked GEMM look **3× slower** than naive GEMM (it isn't — they're within noise),
 - `Eigen_GEMM/64` take **2,655,087 ns**; idle, the same benchmark takes **11,821 ns** — a
   **149× artifact** that looks exactly like a catastrophic OpenMP bug, and isn't.
+
+**3. Anything you run to *do* the measuring is also a competing process.** This is
+trap 2 turned on itself, and it is easy to miss. On a 4-core Pi there is no spare
+core: an editor, an SSH session, a CI agent — or an AI coding agent driving the
+build — contends with the 4 OpenMP threads it is timing. During the v0.6.2 GEMM
+work this produced **9–17% CV**, which is larger than the 5–15% differences being
+measured, so consecutive runs disagreed about who won.
+
+If you cannot get off the box, at least stop lying to yourself about the precision:
+
+- Renice the competing process (`sudo renice -n 19 -p <pid>`) and run the benchmark
+  above it (`sudo nice -n -5 ./bench_...`).
+- **Pair and interleave** the A/B inside one trial and compare per-trial ratios.
+  Thermal drift and frequency changes then hit both arms nearly equally; unpaired
+  means do not survive a chip that heats up during the run.
+- Report **medians with spread**, not best-of-N. Best-of flatters whichever arm has
+  the wider distribution — here it inflated a real ~1.1× edge into a fake 1.46×.
+- If the effect is smaller than the CV, the honest answer is "tie", not the number
+  from the run you liked.
 
 Before benchmarking: stop competing services, then confirm the machine is actually idle
 and not thermally capped.
@@ -1622,6 +1648,48 @@ threaded kernels are verified data-race-free under ThreadSanitizer.**
   overhead 4.76 → 2.89 ms) + crash-guard fallback on **every** GPU wrapper (a
   missing `.spv` returns empty instead of terminating the caller). Dead
   `*_optimized`/multi-block-scan shaders dropped from the build.
+
+### v0.6.2 — NEON GEMM was running on one core
+
+- **Fixed: `neon_gemm_blocked` was effectively single-threaded.** The
+  `#pragma omp parallel for` sat on the `jc` loop, which steps by `NC` — and `NC`
+  is 256 on a Pi 5. A 256×256 GEMM therefore produced **exactly one block**: one
+  A76 ran it and the other three idled. Measured scaling at N=256 was
+  **32.0 / 32.0 / 29.2 GFLOPS on 1 / 2 / 4 threads — none at all** (4 threads was
+  *slower* than 1). N=512 got two blocks, so 4 threads beat 2 by nothing and lost
+  to it: 43.4 vs 54.0.
+  The microkernel was never at fault — per core it already edged out Eigen
+  (32.0 vs 31.3 GFLOPS single-threaded). Parallelism now lives on the `(jr, ir)`
+  microkernel tile grid ((nc/NR)·(mc/MR) = 512 independent tiles at N=256), with
+  **one OpenMP region per `jc`** covering pack and compute.
+- **Packing had to be parallelized too.** Left serial it is ~25% of a 256×256
+  GEMM, and Amdahl capped the whole kernel at ~2.3× (82 GFLOPS); parallel packing
+  took it to 117. C's zero-fill is parallel for the same reason.
+- **Small GEMMs now hand off to Eigen** (`M*N*K < 80³`), which genuinely wins
+  there — 1.9× at N=48 — because the 8×8 microkernel can't amortize its prologue
+  and epilogue over a short k loop. Use each where it wins; results are identical.
+- **Net:** N=256 went **29.2 → ~90–116 GFLOPS (~3–4×)**, and 4-thread scaling from
+  1.0× to **3.69×** (76% of the 4-core 153.6 GFLOPS FP32 peak). Against Eigen this
+  moves from **0.32× (3× slower) to parity** — a paired interleaved A/B leans our
+  way at 6 of 9 sizes (median ratios 1.03–1.11×), but see the honesty note below.
+- **New `test_neon_gemm` suite** (18 suites total): GEMM had **no dedicated tests**,
+  which is exactly how a fully-serial kernel survived — every correctness test
+  passed the entire time, because the bug only cost speed. Covers ragged edge
+  tiles, both sides of the Eigen/NEON dispatch boundary, and determinism across
+  thread counts (a race in the tile sweep would show as nondeterminism).
+  Separately stress-checked over 10,883 shapes (worst relative error 8.6e-07) and
+  verified bitwise-identical at 2/3/4 threads.
+
+> **Honesty note on "beats Eigen".** It doesn't, decisively. Run-to-run noise on
+> this Pi is **9–17% CV**, and the gap being chased is 5–15% — smaller than the
+> noise. Unpaired runs contradicted each other (N=256 read 92.1 vs 80.7 in one
+> run and 82.3 vs 86.8 in the next); a best-of-N harness flattered the NEON path
+> (1.46×) because its spread is wider, while medians showed ~1.14×, and a paired
+> interleaved A/B — the only design here that cancels thermal drift — called
+> **every size a tie within noise**. The defensible claim is parity with a weak
+> ~5–10% lean, plus a solid ~3–4× improvement over the previous code. The
+> irreducible problem is that the agent doing the measuring runs on the same four
+> cores as the benchmark.
 
 ### v0.6.1 — GEMM offload fix + honest benchmark reporting
 

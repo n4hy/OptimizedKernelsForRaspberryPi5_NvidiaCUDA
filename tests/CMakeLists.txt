@@ -110,3 +110,7 @@ if(ENABLE_CUDA)
     # )
     # add_test(NAME test_cuda_radar COMMAND test_cuda_radar)
 endif()
+
+add_executable(test_neon_gemm test_neon_gemm.cpp)
+target_link_libraries(test_neon_gemm PRIVATE OptMathKernels::OptMathKernels gtest gtest_main)
+add_test(NAME test_neon_gemm COMMAND test_neon_gemm)

@@ -76,6 +76,21 @@ constexpr size_t NC_MAX = 2048;
 constexpr size_t MR = 8;    // Rows per microkernel
 constexpr size_t NR = 8;    // Cols per microkernel
 
+// Below this much work (M*N*K), Eigen's small-matrix GEMM beats this kernel and
+// we hand off to it. The 8x8 microkernel amortizes its prologue (zeroing 16
+// accumulators) and epilogue (16 load-add-stores to C) over the k loop, so a
+// short k makes that overhead dominate; Eigen has dedicated small paths.
+// Measured on an idle Pi 5, this kernel vs Eigen (GFLOPS, best-of-7):
+//     N=32   11.8 vs 23.0  -> Eigen 1.95x
+//     N=48   18.3 vs 35.0  -> Eigen 1.92x
+//     N=64   60.3 vs 61.6  -> Eigen 1.02x   (crossover ~N=72)
+//     N=80   73.1 vs 72.9  -> NEON  1.00x
+//     N=96   89.9 vs 84.4  -> NEON  1.07x
+//     N=256 123.4 vs 68.0  -> NEON  1.82x
+// Use each where it wins. 80^3 sits just past the crossover, so neither path is
+// ever the slower choice. Re-measure if MR/NR or the microkernel change.
+constexpr size_t OPTMATH_GEMM_EIGEN_MAX = 80 * 80 * 80;
+
 // 64-byte-aligned, thread-local scratch for the packed A/B panels, sized to the
 // ACTUAL runtime blocking rather than the worst-case max. On a Pi 5 (MC=128,
 // KC=256, NC=256) this is ~128KB (A) + ~256KB (B) per thread; the old static
@@ -244,86 +259,138 @@ void neon_gemm_blocked_f32(
     size_t lda, size_t ldb, size_t ldc) {
 
 #ifdef OPTMATH_USE_NEON
+    // Small GEMM: hand off to Eigen, which wins below the crossover (see
+    // OPTMATH_GEMM_EIGEN_MAX). Same result; this only picks the faster path.
+    // Mapped with the caller's strides, so it works for sub-blocks too.
+    if (M * N * K < OPTMATH_GEMM_EIGEN_MAX) {
+        using OS = Eigen::OuterStride<>;
+        Eigen::Map<const Eigen::MatrixXf, 0, OS> Am(A, M, K, OS((Eigen::Index)lda));
+        Eigen::Map<const Eigen::MatrixXf, 0, OS> Bm(B, K, N, OS((Eigen::Index)ldb));
+        Eigen::Map<Eigen::MatrixXf, 0, OS>       Cm(C, M, N, OS((Eigen::Index)ldc));
+        Cm.noalias() = Am * Bm;
+        return;
+    }
+
     // Runtime-selected cache blocking parameters
     const size_t MC = std::min(get_mc(), MC_MAX);
     const size_t KC = std::min(get_kc(), KC_MAX);
     const size_t NC = std::min(get_nc(), NC_MAX);
 
-    // Initialize C to zero
+    // Initialize C to zero. Parallel over columns (each is a disjoint, contiguous
+    // run in column-major C); serial this is pure Amdahl overhead at large N.
+    #pragma omp parallel for schedule(static)
     for (size_t j = 0; j < N; ++j) {
-        for (size_t i = 0; i < M; ++i) {
-            C[i + j * ldc] = 0.0f;
-        }
+        std::memset(C + j * ldc, 0, M * sizeof(float));
     }
 
     // Loop over blocks of N (columns of B and C).
-    // Parallelized across the 4 Cortex-A76 cores: each thread owns a disjoint
-    // set of column blocks, writes disjoint columns of C (no races), and packs
-    // B/A into its own thread_local packed_B/packed_A panels. The jc loop is the
-    // only safe level to split — packed_B is packed per-jc-block and reused
-    // across the inner ic loop, so parallelizing ic would read another thread's
-    // panel. schedule(dynamic) balances the smaller tail block.
-    #pragma omp parallel for schedule(dynamic)
+    //
+    // Threading note (v0.6.2): this loop used to carry the `#pragma omp parallel
+    // for`, which gave ceil(N/NC) units of parallelism -- and NC is 256 on a Pi 5.
+    // So a 256x256 GEMM produced exactly ONE block and ran fully serial on one of
+    // the four A76s, while 512 produced two (and 4 threads then ran *slower* than
+    // 2: 43.4 vs 54.0 GFLOPS, from scheduling four workers over two blocks).
+    // Measured: Blocked/256 was 32.0 / 32.0 / 29.2 GFLOPS at 1 / 2 / 4 threads --
+    // zero scaling. The microkernel was never the problem; per core it already
+    // beat Eigen (32.0 vs 31.3 GFLOPS single-threaded).
+    //
+    // The parallelism now lives on the (jr, ir) microkernel loops below, which
+    // yield (nc/NR)*(mc/MR) independent tiles -- 512 for a 256x256 GEMM, ample
+    // for 4 cores at any size that reaches the microkernel.
     for (size_t jc = 0; jc < N; jc += NC) {
         size_t nc = std::min(NC, N - jc);
 
-        // Per-thread packed panels, sized to the actual blocking (grow-on-demand,
-        // thread_local so each core owns its own scratch). Cheap after the first
-        // call: only reallocates when a larger panel is requested.
+        // Packed panels, sized to the actual blocking (grow-on-demand). These MUST
+        // be acquired OUTSIDE the parallel region below: the buffers are
+        // thread_local, so a worker calling .get() itself would get its own
+        // separate scratch -- it would pack into one buffer and the microkernel
+        // would read another. Taking the pointers here gives every worker the same
+        // (master's) buffers, which they fill cooperatively via `omp for` and then
+        // read back after the barrier.
         float* packed_A = packed_A_buf.get(MC * KC);
         float* packed_B = packed_B_buf.get(KC * NC);
 
-        // Loop over blocks of K
-        for (size_t pc = 0; pc < K; pc += KC) {
-            size_t kc = std::min(KC, K - pc);
+        // ONE parallel region for the whole jc block. Every thread runs the pc/ic
+        // loops redundantly (identical, cheap index math) while the `omp for`s
+        // split the actual work -- so the team forks/joins once per jc instead of
+        // once per pack_B and once per ic block. That overhead is invisible at
+        // N>=256 but dominated small problems: with a region per stage, N=128 ran
+        // 57.9 GFLOPS against Eigen's 81.7.
+        //
+        // The implicit barrier ending each `omp for` is load-bearing:
+        //   - after pack_B: packed_B is complete before any thread reads it;
+        //   - after pack_A: likewise for packed_A;
+        //   - after the microkernel sweep: every thread is done reading packed_A/
+        //     packed_B before the next ic/pc iteration repacks them.
+        // Do not add `nowait` to any of them.
+        //
+        // No `if()` guard is needed: anything small enough for fork/join to hurt
+        // already went to Eigen above (OPTMATH_GEMM_EIGEN_MAX).
+        #pragma omp parallel
+        {
+            // Loop over blocks of K
+            for (size_t pc = 0; pc < K; pc += KC) {
+                size_t kc = std::min(KC, K - pc);
 
-            // Pack B panel: B[pc:pc+kc, jc:jc+nc]
-            for (size_t jr = 0; jr < nc; jr += NR) {
-                size_t nr = std::min(NR, nc - jr);
-                pack_B_panel(
-                    packed_B + jr * kc,
-                    B + pc + (jc + jr) * ldb,
-                    ldb, kc, nr);
-            }
-
-            // Loop over blocks of M (rows of A and C)
-            for (size_t ic = 0; ic < M; ic += MC) {
-                size_t mc = std::min(MC, M - ic);
-
-                // Pack A panel: A[ic:ic+mc, pc:pc+kc]
-                for (size_t ir = 0; ir < mc; ir += MR) {
-                    size_t mr = std::min(MR, mc - ir);
-                    pack_A_panel(
-                        packed_A + ir * kc,
-                        A + (ic + ir) + pc * lda,
-                        lda, mr, kc);
-                }
-
-                // Microkernel loop
+                // Pack B panel: B[pc:pc+kc, jc:jc+nc]. Parallel over jr: each
+                // strip writes its own packed_B + jr*kc, so writes are disjoint.
+                // Packing must be parallel too -- left serial it is ~25% of a
+                // 256x256 GEMM, and Amdahl then caps the kernel near 2.3x on 4
+                // cores (measured: 82 GFLOPS vs 117 once parallelized).
+                #pragma omp for schedule(static)
                 for (size_t jr = 0; jr < nc; jr += NR) {
                     size_t nr = std::min(NR, nc - jr);
+                    pack_B_panel(
+                        packed_B + jr * kc,
+                        B + pc + (jc + jr) * ldb,
+                        ldb, kc, nr);
+                }
 
+                // Loop over blocks of M (rows of A and C)
+                for (size_t ic = 0; ic < M; ic += MC) {
+                    size_t mc = std::min(MC, M - ic);
+
+                    // Pack A panel: A[ic:ic+mc, pc:pc+kc]. Disjoint per ir.
+                    #pragma omp for schedule(static)
                     for (size_t ir = 0; ir < mc; ir += MR) {
                         size_t mr = std::min(MR, mc - ir);
+                        pack_A_panel(
+                            packed_A + ir * kc,
+                            A + (ic + ir) + pc * lda,
+                            lda, mr, kc);
+                    }
 
-                        if (mr == MR && nr == NR) {
-                            // Full microkernel
-                            micro_kernel_8x8(
-                                kc,
-                                packed_A + ir * kc,
-                                packed_B + jr * kc,
-                                C + (ic + ir) + (jc + jr) * ldc,
-                                ldc);
-                        } else {
-                            // Edge case: scalar fallback
-                            for (size_t j = 0; j < nr; ++j) {
-                                for (size_t i = 0; i < mr; ++i) {
-                                    float sum = 0.0f;
-                                    for (size_t p = 0; p < kc; ++p) {
-                                        sum += packed_A[ir * kc + p * MR + i] *
-                                               packed_B[jr * kc + p * NR + j];
+                    // Microkernel loop, parallel over the (jr, ir) tile grid.
+                    // Tile (jr, ir) writes C[ic+ir .. ic+ir+MR, jc+jr .. jc+jr+NR],
+                    // disjoint for distinct (jr, ir), so the workers never race.
+                    // packed_A/packed_B are read-only here. static: tiles are equal
+                    // cost (edge tiles are cheaper, and there are at most one row
+                    // and one column of them).
+                    #pragma omp for collapse(2) schedule(static)
+                    for (size_t jr = 0; jr < nc; jr += NR) {
+                        for (size_t ir = 0; ir < mc; ir += MR) {
+                            size_t nr = std::min(NR, nc - jr);
+                            size_t mr = std::min(MR, mc - ir);
+
+                            if (mr == MR && nr == NR) {
+                                // Full microkernel
+                                micro_kernel_8x8(
+                                    kc,
+                                    packed_A + ir * kc,
+                                    packed_B + jr * kc,
+                                    C + (ic + ir) + (jc + jr) * ldc,
+                                    ldc);
+                            } else {
+                                // Edge case: scalar fallback
+                                for (size_t j = 0; j < nr; ++j) {
+                                    for (size_t i = 0; i < mr; ++i) {
+                                        float sum = 0.0f;
+                                        for (size_t p = 0; p < kc; ++p) {
+                                            sum += packed_A[ir * kc + p * MR + i] *
+                                                   packed_B[jr * kc + p * NR + j];
+                                        }
+                                        C[(ic + ir + i) + (jc + jr + j) * ldc] += sum;
                                     }
-                                    C[(ic + ir + i) + (jc + jr + j) * ldc] += sum;
                                 }
                             }
                         }
