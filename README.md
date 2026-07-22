@@ -1,10 +1,10 @@
 # OptMathKernels
 
-[![Latest Release](https://img.shields.io/badge/release-v0.6.0-blue)](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.6.0)
+[![Latest Release](https://img.shields.io/badge/release-v0.6.3-blue)](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.6.3)
 
 **High-Performance Numerical Library for ARM SBCs and NVIDIA GPUs**
 
-> **Latest release:** [v0.6.0 — Pi 5 (Cortex-A76 / V3D) optimization pass: multi-core threading, int8 SDOT GEMM (~13× fp32), radix-2 FFT Doppler (~290×)](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.6.0)
+> **Latest release:** [v0.6.3 — public `neon_gemm` no longer sends any small-dimension GEMM down the naive path (up to 20× on skinny shapes); on top of v0.6.0's Pi 5 (Cortex-A76 / V3D) optimization pass (multi-core threading, int8 SDOT GEMM ~13× fp32, radix-2 FFT Doppler ~290×)](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.6.3)
 
 OptMathKernels is a C++20 numerical library optimized for **Raspberry Pi 5**, **Orange Pi 6 Plus**, and **NVIDIA CUDA GPUs**. It seamlessly bridges **Eigen** (CPU), **ARM NEON** (SIMD), **ARM SVE2** (Scalable Vectors), **Vulkan** (Compute Shaders), and **CUDA** (NVIDIA GPUs) into a single, easy-to-use API.
 
@@ -1344,62 +1344,93 @@ On x86_64 the CUDA suite is built (running on the RTX 5070 Ti) in place of the A
 
 ### x86_64 Desktop Benchmark Results (Intel Core Ultra 9 285K + RTX 5090)
 
-Tested on an Intel Core Ultra 9 285K (24 cores @ 5.5 GHz; L1 48 KiB, L2 3 MiB, L3 36 MiB) with a discrete **NVIDIA GeForce RTX 5090** (Blackwell, SM 10.0, 32 GB; CUDA 13.0.88, driver 580.126.20, Vulkan 1.3.275). Built with the default options (`ENABLE_CUDA=ON`, `ENABLE_VULKAN=ON`, NEON/SVE2 left on but inactive on x86_64), Release, C++20.
+Tested on an Intel Core Ultra 9 285K (24 cores @ 5.5 GHz; L1 48 KiB, L2 3 MiB, L3 36 MiB) with a discrete **NVIDIA GeForce RTX 5090** (Blackwell, consumer GB20x — `nvidia-smi` reports **compute_cap 12.0** / `sm_120`, 32 GB; CUDA 13.0.88, driver 580.126.20, Vulkan Instance 1.3.275 / device apiVersion 1.4.318). Built with the default options (`ENABLE_CUDA=ON`, `ENABLE_VULKAN=ON`, NEON/SVE2 left on but inactive on x86_64), Release, C++20.
+
+> **CUDA architectures note (v0.6.3).** The default `CMAKE_CUDA_ARCHITECTURES` list is `75;80;86;89;90;100;103` — this includes datacenter Blackwell (SM 10.0) but *not* consumer Blackwell (SM 12.0). On this box the CUDA suite therefore runs on the RTX 5090 via PTX JIT from the highest matching arch, not from native `sm_120` cubins. All 36 CUDA tests still pass; for peak `sm_120` performance pass `-DCMAKE_CUDA_ARCHITECTURES="...;120"` at configure time.
 
 > The same caveats as the 275HX/5070 Ti section above apply: NEON/SVE2-direct benchmark cases report `ERROR OCCURRED: 'NEON not available'` on x86_64 and are skipped here; CPU figures come from the Eigen-reference and scalar-fallback paths. The Vulkan microbenchmarks are end-to-end (allocation + host↔device copy per iteration), so the discrete RTX pays PCIe transfer latency and these numbers are **transfer-bound, not** the RTX 5090's peak compute. The Vulkan backend auto-selects the discrete GPU and logs `[Vulkan] Selected GPU: NVIDIA GeForce RTX 5090`.
 
-#### Vulkan GPU — Matrix Multiply (RTX 5090)
+#### Vulkan GPU — Matrix Multiply (RTX 5090, v0.6.3, 2026-07-22)
 
-| Size | RTX 5090 | Notes |
-|------|----------|-------|
-| 64x64 | 1.28 GFLOPS | Dispatch/transfer bound |
-| 128x128 | 7.07 GFLOPS | Overhead dominated |
-| 256x256 | 22.9 GFLOPS | Ramping up |
-| 512x512 | 54.8 GFLOPS | Compute growing |
-| 1024x1024 | **114 GFLOPS** | Compute begins to dominate |
+| Size | Time | RTX 5090 | Notes |
+|------|------|----------|-------|
+| 64x64 | 9.5 μs | 55.4 GFLOPS | Small enough to hide dispatch inside a single wave |
+| 128x128 | 146 μs | 28.7 GFLOPS | Overhead-dominated |
+| 256x256 | 886 μs | 37.9 GFLOPS | Ramping up |
+| 512x512 | 5.16 ms | 52.0 GFLOPS | Compute growing |
+| 1024x1024 | 32.4 ms | **66.4 GFLOPS** | Still transfer-bound end-to-end |
 
-#### Vulkan GPU — Other Compute Kernels (largest size shown)
+> The Vulkan MatMul benchmark includes per-iteration host↔device transfer over PCIe, so these are the *end-to-end* numbers a caller sees — **not** the RTX 5090's peak compute. The prior release documented higher peaks (up to ~114 GFLOPS at 1024²) that we could not reproduce on today's re-run under the same idle machine; the deltas are consistent with run-to-run variance in the transfer path and the PTX-JIT path (see the CUDA architectures note above).
 
-| Benchmark | Size | RTX 5090 |
-|-----------|------|----------|
-| **Vec Add** | 4M | 633 MiB/s |
-| **Vec Mul** | 4M | 631 MiB/s |
-| **Vec Dot** | 4M | 579 MFLOPS |
-| **Reduce Sum** | 4M | 577 MFLOPS |
-| **Conv1D** | 262144 / 128 | 15.6 GFLOPS |
-| **Conv2D** | 512 / 7 | 6.01 GFLOPS |
-| **Prefix Sum** | 4096 | 2.11 GFLOPS |
-| **Mat Transpose** | 2048 | 398 MiB/s |
+#### Vulkan GPU — Other Compute Kernels (largest size shown, v0.6.3)
 
-#### CPU Reference (Eigen / scalar — NEON disabled on x86_64)
+| Benchmark | Size | Time | RTX 5090 |
+|-----------|------|------|----------|
+| **Reduce Sum (barrier tree)** | 4M | 2.10 ms | 2.00 GFLOPS |
+| **Reduce Sum (subgroup)** | 4M | 2.13 ms | 1.97 GFLOPS |
+| **Conv1D** | 262144 / 128 | 3.81 ms | 17.6 GFLOPS |
+| **Conv2D** | 512 / 7 | 3.93 ms | 6.54 GFLOPS |
+| **Prefix Sum** | 4096 | 2.04 μs | 2.01 GFLOPS |
+| **Mat Transpose** | 2048 | 108 ms | 296 MiB/s |
+
+#### CPU Reference (Eigen / scalar — NEON disabled on x86_64, v0.6.3)
 
 | Benchmark | Size | Time | Throughput |
 |-----------|------|------|------------|
-| **Eigen GEMM** | 128 | 75.3 μs | 55.7 GFLOPS |
-| **Eigen GEMM** | 512 | 4.67 ms | 57.5 GFLOPS |
-| **Cross-Correlation (scalar)** | 128 | 2.88 μs | 11.4 GFLOPS |
-| **Complex XCorr (scalar)** | 1024 | 391 μs | 21.4 GFLOPS |
-| **std::exp** | 1M | 1.12 ms | 936 MFLOPS |
-| **std::sin** | 1M | 1.53 ms | 683 MFLOPS |
+| **Eigen GEMM** | 32 | 1.31 μs | 50.2 GFLOPS |
+| **Eigen GEMM** | 64 | 9.59 μs | 54.7 GFLOPS |
+| **Eigen GEMM** | 128 | 178 μs | 23.5 GFLOPS |
+| **Eigen GEMM** | 256 | 693 μs | 48.4 GFLOPS |
+| **Eigen GEMM** | 512 | 1.81 ms | **148 GFLOPS** |
+| **Eigen Dot** | 4096 | 178 ns | 46.1 GFLOPS |
+| **Eigen Dot** | 4M | 1.03 ms | 8.18 GFLOPS |
+| **Scalar Sigmoid** | 1M | 1.37 ms | 1.53 GFLOPS |
+| **std::exp** | 1M | 1.14 ms | 919 MFLOPS |
+| **std::sin** | 1M | 1.60 ms | 656 MFLOPS |
+| **std::tanh** | 1M | 3.12 ms | 336 MFLOPS |
 
-#### Radar Signal Processing (CPU scalar paths)
+#### Radar Signal Processing (CPU scalar paths, v0.6.3)
 
 | Benchmark | Parameters | Time | FLOPS |
 |-----------|-----------|------|-------|
-| **CAF** | 4096 samples, 41 Doppler, 100 range | 6.71 ms | 25.0 GFLOPS |
-| **CAF** | 65536 samples, 101 Doppler, 500 range | 1.25 s | 26.5 GFLOPS |
-| **CFAR CA 1D** | 64K samples | 2.89 ms | 2.90 GFLOPS |
-| **CFAR 2D** | 512x1024 range-Doppler | 2.75 ms | 12.2 GFLOPS |
-| **NLMS Filter** | 256K samples, 128 taps | 14.1 ms | 9.50 GFLOPS |
-| **MTI Filter** | 256 pulses x 2048 range | 817 μs | 3.82 GFLOPS |
-| **Beamform (Delay-Sum)** | 16 elements, 64K samples | 1.46 ms | 1.44 GFLOPS |
-| **Steering Vector** | 64 elements | 867 ns | 143 M items/s |
+| **CAF** | 4096 samples, 41 Doppler, 100 range | 935 μs | **424 GFLOPS** |
+| **CAF** | 16384 samples, 61 Doppler, 200 range | 6.49 ms | 411 GFLOPS |
+| **CAF** | 65536 samples, 101 Doppler, 500 range | 86.5 ms | 470 GFLOPS |
+| **CFAR CA 1D** | 64K samples | 121 μs | 114 GFLOPS |
+| **CFAR 2D** | 512x1024 range-Doppler | 2.26 ms | 19.0 GFLOPS |
+| **NLMS Filter** | 256K samples, 128 taps | 13.7 ms | 9.83 GFLOPS |
+| **MTI Filter** | 256 pulses x 2048 range | 815 μs | 3.83 GFLOPS |
+| **Beamform (Delay-Sum)** | 16 elements, 64K samples | 1.38 ms | 1.52 GFLOPS |
+| **Steering Vector** | 64 elements | 5.86 μs | 339 M items/s |
+
+> The Radar CAF numbers are roughly an order of magnitude higher than the v0.5.16 documentation on the same box — that's the **radix-2 FFT Doppler** path from v0.6.0 (which the previous 285K/RTX 5090 snapshot pre-dated) now flowing through the CAF. See v0.6.0 in [Recent Changes](#recent-changes).
 
 (`Beamform (Phase)` is NEON-only and reports `NEON not available` on x86_64.)
 
-#### Test Results (x86_64 — 16/16 Suites Pass)
+#### Test Results (x86_64 — 18/18 Suites Pass, v0.6.3 verification 2026-07-22)
 
-All 16 suites pass in 14.2 s; the CUDA suite runs on the RTX 5090, and NEON suites pass via scalar fallbacks. The per-suite breakdown is identical to the 275HX/5070 Ti table above (same test binaries), with `test_cuda_kernels` (36 tests) executing on CUDA 13.0 / SM 10.0 hardware.
+All 18 suites pass in ~18.9 s via `ctest --output-on-failure`. The suite grew from 16 to 18 in v0.6.2/v0.6.3 with the addition of `test_neon_quant_gemm` (int8 SDOT GEMM correctness — passes on x86_64 via scalar fallback) and `test_neon_gemm` (the small-dim regression tests that motivated the v0.6.3 fix). The CUDA suite runs on the RTX 5090 (JIT to `sm_120`); NEON suites pass via scalar fallbacks.
+
+| # | Test Suite | Time | Notes |
+|---|------------|------|-------|
+| 1 | `test_basic` | 0.00 s | Core |
+| 2 | `test_vulkan_vector` | 0.56 s | Vulkan (RTX 5090) |
+| 3 | `test_vulkan_matrix` | 0.32 s | Vulkan |
+| 4 | `test_vulkan_dsp` | 0.21 s | Vulkan |
+| 5 | `test_vulkan_advanced` | 0.22 s | Vulkan |
+| 6 | `test_neon_kernels` | 0.00 s | NEON (scalar fallback) |
+| 7 | `test_neon_complex` | 0.00 s | NEON (scalar fallback) |
+| 8 | `test_neon_transcendentals` | 0.00 s | NEON (scalar fallback) |
+| 9 | `test_radar_caf` | 0.01 s | Radar |
+| 10 | `test_radar_cfar` | 0.00 s | Radar |
+| 11 | `test_neon_resample` | 0.00 s | NEON (scalar fallback) |
+| 12 | `test_neon_iir` | 0.00 s | NEON (scalar fallback) |
+| 13 | `test_neon_conv2d` | 0.00 s | NEON (scalar fallback) |
+| 14 | `test_neon_linalg` | 0.00 s | NEON (scalar fallback) |
+| 15 | `test_neon_quant_gemm` | 0.01 s | Int8 SDOT GEMM (v0.6.2+) |
+| 16 | `test_platform` | 0.00 s | Platform |
+| 17 | `test_cuda_kernels` | 16.77 s | 36 tests, CUDA 13.0 / RTX 5090 |
+| 18 | `test_neon_gemm` | 0.74 s | GEMM small-dim regression (v0.6.3) |
 
 ---
 
