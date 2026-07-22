@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64 (Vulkan lavapipe, no CUDA, no NEON)
+            runner: ubuntu-latest
+            enable_neon: 'OFF'
+          - name: Linux aarch64 (NEON, Vulkan lavapipe, no CUDA)
+            runner: ubuntu-24.04-arm
+            enable_neon: 'ON'
+
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 4
+      CTEST_OUTPUT_ON_FAILURE: 1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build & Vulkan dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libeigen3-dev \
+            libvulkan-dev \
+            vulkan-tools \
+            glslang-tools \
+            spirv-tools \
+            mesa-vulkan-drivers
+
+      - name: Discover Vulkan ICDs and pin lavapipe
+        run: |
+          echo "== ICDs under /usr/share/vulkan/icd.d =="
+          ls -l /usr/share/vulkan/icd.d/ || true
+          echo "== dpkg contents of mesa-vulkan-drivers =="
+          dpkg -L mesa-vulkan-drivers | grep -E '(icd\.d|_icd\.)' || true
+
+          # Prefer the lavapipe (llvmpipe) ICD if the package shipped one;
+          # otherwise trust whatever ICD mesa-vulkan-drivers registered.
+          lvp="$(ls /usr/share/vulkan/icd.d/lvp_icd.*.json 2>/dev/null | head -1 || true)"
+          if [ -n "$lvp" ] && [ -f "$lvp" ]; then
+            echo "Pinning VK_ICD_FILENAMES=$lvp (lavapipe)"
+            echo "VK_ICD_FILENAMES=$lvp" >> "$GITHUB_ENV"
+          else
+            echo "No lavapipe ICD found — leaving VK_ICD_FILENAMES unset; loader will use default search"
+          fi
+
+          echo "== vulkaninfo summary =="
+          vulkaninfo --summary || {
+            echo "vulkaninfo failed; falling back to VK_LOADER_DRIVERS_SELECT=lvp"
+            echo "VK_LOADER_DRIVERS_SELECT=lvp" >> "$GITHUB_ENV"
+            VK_LOADER_DRIVERS_SELECT=lvp vulkaninfo --summary
+          }
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DENABLE_NEON=${{ matrix.enable_neon }} \
+            -DENABLE_SVE2=OFF \
+            -DENABLE_VULKAN=ON \
+            -DENABLE_CUDA=OFF \
+            -DBUILD_TESTS=ON \
+            -DBUILD_BENCHMARKS=OFF
+
+      - name: Build
+        run: cmake --build build
+
+      - name: List tests
+        run: ctest -N
+        working-directory: build
+
+      - name: Test
+        run: ctest --output-on-failure
+        working-directory: build
