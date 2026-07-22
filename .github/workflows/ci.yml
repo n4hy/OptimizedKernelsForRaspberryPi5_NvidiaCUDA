@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x86_64 (Vulkan lavapipe, no CUDA, no NEON)
+            runner: ubuntu-latest
+            enable_neon: 'OFF'
+            lvp_icd: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          - name: Linux aarch64 (NEON, Vulkan lavapipe, no CUDA)
+            runner: ubuntu-24.04-arm
+            enable_neon: 'ON'
+            lvp_icd: /usr/share/vulkan/icd.d/lvp_icd.aarch64.json
+
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 4
+      CTEST_OUTPUT_ON_FAILURE: 1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build & Vulkan dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            ninja-build \
+            pkg-config \
+            libeigen3-dev \
+            libvulkan-dev \
+            vulkan-tools \
+            glslang-tools \
+            spirv-tools \
+            mesa-vulkan-drivers
+
+      - name: Force lavapipe (software Vulkan) and verify
+        run: |
+          # Pin the loader to the Mesa lavapipe ICD so it doesn't try the
+          # runner's host GPU (there isn't one on the free tier).
+          echo "VK_ICD_FILENAMES=${{ matrix.lvp_icd }}" >> "$GITHUB_ENV"
+          ls -l "${{ matrix.lvp_icd }}" || (echo "lavapipe ICD not found — check mesa-vulkan-drivers version" && exit 1)
+          VK_ICD_FILENAMES=${{ matrix.lvp_icd }} vulkaninfo --summary
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DENABLE_NEON=${{ matrix.enable_neon }} \
+            -DENABLE_SVE2=OFF \
+            -DENABLE_VULKAN=ON \
+            -DENABLE_CUDA=OFF \
+            -DBUILD_TESTS=ON \
+            -DBUILD_BENCHMARKS=OFF
+
+      - name: Build
+        run: cmake --build build
+
+      - name: List tests
+        run: ctest -N
+        working-directory: build
+
+      - name: Test
+        run: ctest --output-on-failure
+        working-directory: build
