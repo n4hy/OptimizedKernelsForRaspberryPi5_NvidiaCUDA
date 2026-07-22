@@ -1,5 +1,6 @@
 # OptMathKernels
 
+[![CI](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/actions/workflows/ci.yml?query=branch%3Amain)
 [![Latest Release](https://img.shields.io/badge/release-v0.6.3-blue)](https://github.com/n4hy/OptimizedKernelsForRaspberryPi5_NvidiaCUDA/releases/tag/v0.6.3)
 
 **High-Performance Numerical Library for ARM SBCs and NVIDIA GPUs**
