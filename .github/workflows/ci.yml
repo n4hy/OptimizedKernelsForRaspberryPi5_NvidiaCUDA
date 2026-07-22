@@ -22,11 +22,9 @@ jobs:
           - name: Linux x86_64 (Vulkan lavapipe, no CUDA, no NEON)
             runner: ubuntu-latest
             enable_neon: 'OFF'
-            lvp_icd: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           - name: Linux aarch64 (NEON, Vulkan lavapipe, no CUDA)
             runner: ubuntu-24.04-arm
             enable_neon: 'ON'
-            lvp_icd: /usr/share/vulkan/icd.d/lvp_icd.aarch64.json
 
     env:
       CMAKE_BUILD_PARALLEL_LEVEL: 4
@@ -50,13 +48,29 @@ jobs:
             spirv-tools \
             mesa-vulkan-drivers
 
-      - name: Force lavapipe (software Vulkan) and verify
+      - name: Discover Vulkan ICDs and pin lavapipe
         run: |
-          # Pin the loader to the Mesa lavapipe ICD so it doesn't try the
-          # runner's host GPU (there isn't one on the free tier).
-          echo "VK_ICD_FILENAMES=${{ matrix.lvp_icd }}" >> "$GITHUB_ENV"
-          ls -l "${{ matrix.lvp_icd }}" || (echo "lavapipe ICD not found — check mesa-vulkan-drivers version" && exit 1)
-          VK_ICD_FILENAMES=${{ matrix.lvp_icd }} vulkaninfo --summary
+          echo "== ICDs under /usr/share/vulkan/icd.d =="
+          ls -l /usr/share/vulkan/icd.d/ || true
+          echo "== dpkg contents of mesa-vulkan-drivers =="
+          dpkg -L mesa-vulkan-drivers | grep -E '(icd\.d|_icd\.)' || true
+
+          # Prefer the lavapipe (llvmpipe) ICD if the package shipped one;
+          # otherwise trust whatever ICD mesa-vulkan-drivers registered.
+          lvp="$(ls /usr/share/vulkan/icd.d/lvp_icd.*.json 2>/dev/null | head -1 || true)"
+          if [ -n "$lvp" ] && [ -f "$lvp" ]; then
+            echo "Pinning VK_ICD_FILENAMES=$lvp (lavapipe)"
+            echo "VK_ICD_FILENAMES=$lvp" >> "$GITHUB_ENV"
+          else
+            echo "No lavapipe ICD found — leaving VK_ICD_FILENAMES unset; loader will use default search"
+          fi
+
+          echo "== vulkaninfo summary =="
+          vulkaninfo --summary || {
+            echo "vulkaninfo failed; falling back to VK_LOADER_DRIVERS_SELECT=lvp"
+            echo "VK_LOADER_DRIVERS_SELECT=lvp" >> "$GITHUB_ENV"
+            VK_LOADER_DRIVERS_SELECT=lvp vulkaninfo --summary
+          }
 
       - name: Configure
         run: |
