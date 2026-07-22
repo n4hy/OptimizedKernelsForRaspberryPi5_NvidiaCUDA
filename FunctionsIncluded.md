@@ -2,7 +2,7 @@
 
 Complete API documentation for OptMathKernels - High-Performance Numerical Library for Raspberry Pi 5 and NVIDIA GPUs.
 
-**Version**: 0.6.0
+**Version**: 0.6.3
 **Total Functions**: 480+
 **Backends**: NEON (ARM), SVE2 (ARMv9), CUDA (NVIDIA), Vulkan (Cross-platform), Radar (Signal Processing), Platform (Detection)
 
@@ -64,9 +64,9 @@ Returns `true` if NEON acceleration was compiled in and is available.
 | `neon_gemm_4x4_f32` | `void` | `float* C, const float* A, std::size_t lda, const float* B, std::size_t ldb, std::size_t ldc` | 4x4 GEMM microkernel: `C += A * B` |
 | `neon_gemm_blocked_f32` | `void` | `float* C, const float* A, const float* B, std::size_t M, std::size_t N, std::size_t K, std::size_t lda, std::size_t ldb, std::size_t ldc` | Cache-blocked GEMM (runtime-tuned MC/KC/NC) |
 
-**Cache Blocking Parameters** (auto-tuned per detected L3 cache):
-- Cortex-A76 (Pi 5, 2MB L3): MC=128, KC=256, NC=512
-- Cortex-A720 (Orange Pi 6+, 12MB L3): MC=256, KC=512, NC=1024
+**Cache Blocking Parameters** (auto-tuned per detected L2/L3 cache):
+- Cortex-A76 (Pi 5, 512KB L2 / 2MB L3): MC=128, KC=256, NC=256 (B panel sized to ~½ L2; the pre-v0.6.2 NC=512 evicted A/C every pass and was the "GEMM ran on one core" root cause)
+- Cortex-A720 (Orange Pi 6+, 512KB L2 / 12MB L3): MC=256, KC=512, NC=2048 (B panel ≈ 4 MB, ~⅓ of L3)
 - 8x8 microkernel with column-oriented NEON FMA accumulators
 
 ---
@@ -1041,9 +1041,9 @@ a(θ)[n] = exp(j * 2π * d/λ * n * sin(θ))
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `get_gemm_mc` | `std::size_t get_gemm_mc()` | MC parameter (256 for L3>=8MB, 128 otherwise) |
-| `get_gemm_kc` | `std::size_t get_gemm_kc()` | KC parameter (512 for L3>=8MB, 256 otherwise) |
-| `get_gemm_nc` | `std::size_t get_gemm_nc()` | NC parameter (2048 for L3>=8MB, 512 otherwise) |
+| `get_gemm_mc` | `std::size_t get_gemm_mc()` | MC parameter (256 for L3≥8MB, 128 otherwise) |
+| `get_gemm_kc` | `std::size_t get_gemm_kc()` | KC parameter (512 for L3≥8MB, 256 otherwise) |
+| `get_gemm_nc` | `std::size_t get_gemm_nc()` | NC parameter: 2048 for L3≥8MB; on small-L3 targets computed at runtime as `(L2/2) / (KC·4)` rounded to a multiple of NR=8 (Pi 5 → 256) |
 
 ---
 

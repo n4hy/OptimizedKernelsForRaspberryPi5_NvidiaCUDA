@@ -232,9 +232,9 @@ make -j$(nproc)
 
 **Cache Blocking Parameters** (auto-tuned per platform):
 ```cpp
-// Pi 5 (2MB L3):  MC=128, KC=256, NC=512
-// Orange Pi 6+ (12MB L3): MC=256, KC=512, NC=2048
-// 8x8 microkernel with 4x4 register tiles (32 NEON registers)
+// Pi 5 (512KB L2 / 2MB L3):  MC=128, KC=256, NC=256   // v0.6.2+: NC was 512 pre-fix; that sized the B panel to all of L2
+// Orange Pi 6+ (12MB L3):    MC=256, KC=512, NC=2048  // B panel ~4MB, ~1/3 of L3
+// 8x8 microkernel with column-oriented NEON FMA accumulators (16 NEON registers)
 neon_gemm_blocked_f32(C, A, B, M, N, K, lda, ldb, ldc);
 ```
 
@@ -550,7 +550,7 @@ make -j$(nproc)
 | `ENABLE_I8MM` | ON | Enable I8MM int8 matrix multiply |
 | `ENABLE_VULKAN` | ON | Enable Vulkan compute |
 | `ENABLE_CUDA` | ON | Enable NVIDIA CUDA |
-| `CMAKE_CUDA_ARCHITECTURES` | 50;52;60;61;70;75;80;86;89;100;103 | CUDA compute capabilities (Maxwell through Blackwell) |
+| `CMAKE_CUDA_ARCHITECTURES` | *auto, per toolkit*: CUDA 13+ → `75;80;86;89;90;100;103`; CUDA 12.x → `50;52;60;61;70;75;80;86;89`; CUDA 11.x → `50;52;60;61;70;75;80;86` (see `CMakeLists.txt`) | CUDA compute capabilities. Pass this option to override, or `-DOPTMATH_CUDA_NATIVE=ON` to build only for the detected GPU. |
 | `BUILD_TESTS` | ON | Build GoogleTest tests |
 | `BUILD_BENCHMARKS` | OFF | Build Google Benchmark |
 | `CMAKE_POSITION_INDEPENDENT_CODE` | ON | Enable -fPIC (set globally) |
@@ -1880,8 +1880,9 @@ V3D, so FP16 is a CPU/NEON feature only on this platform.
 
 ### Known performance gaps (measured, not yet fixed)
 
-Open as of v0.6.2. Numbers are medians on an idle Pi 5; see
-[AUDIT_PLAN.md](AUDIT_PLAN.md) for the full audit trail.
+Open as of v0.6.3. Numbers are medians on an idle Pi 5; see
+[AUDIT_PLAN.md](AUDIT_PLAN.md) for the full audit trail (42 confirmed findings from
+the v0.6.3 multi-agent sweep, 4 fixed, 38 still open — 18 of them correctness).
 
 | Item | Measured | Assessment |
 |------|----------|------------|

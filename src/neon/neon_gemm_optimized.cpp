@@ -9,9 +9,11 @@
  *
  * Cache Blocking Infrastructure:
  *   Runtime MC/KC/NC parameters tuned per target: Cortex-A76 (Pi 5: 64KB
- *   L1, 512KB L2, 2MB L3) uses MC=128, KC=256, NC=512. Cortex-A720
+ *   L1, 512KB L2, 2MB L3) uses MC=128, KC=256, NC=256. Cortex-A720
  *   (CIX P1: 512KB L2, 12MB L3) uses MC=256, KC=512, NC=2048. Thread-
- *   local aligned buffers for packed panels.
+ *   local aligned buffers for packed panels. (Pre-v0.6.2 the Pi 5 NC was
+ *   512, which sized the B panel to all of L2 and evicted A/C every pass.
+ *   See platform.cpp:432-434.)
  *
  * 8x8 Microkernel:
  *   micro_kernel_8x8 uses column-oriented accumulators for efficient
