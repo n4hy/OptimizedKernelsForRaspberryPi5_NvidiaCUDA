@@ -48,6 +48,7 @@ if(ENABLE_CUDA)
         cuda/cuda_kernels.cu
         cuda/cuda_complex.cu
         cuda/cuda_radar.cu
+        cuda/cuda_int8.cu
     )
     list(APPEND SOURCES ${CUDA_SOURCES})
 
