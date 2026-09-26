@@ -1469,10 +1469,43 @@ static float run_reduction(const Eigen::VectorXf& a, const std::string& shaderNa
     return result;
 }
 
+// The capability query trusts the driver's reported subgroupSize, but some
+// drivers disagree with themselves: Mesa ANV on Intel ARL reports
+// gl_SubgroupSize = 32 while dispatching 16-lane subgroups, so the xor-16
+// shuffle reads lanes that do not exist. Run the kernel once on integer data
+// (every partial sum is exact in fp32: 0+..+4095 = 8386560 < 2^24) and
+// disable the subgroup path if it does not reproduce the exact answer.
+static bool subgroup_reduce_verified() {
+    static const bool ok = [] {
+        auto& ctx = VulkanContext::get();
+        if (!ctx.subgroupCanReduce) return false;
+        bool pass = true;
+        try {
+            for (int n : {4096, 1000}) {
+                Eigen::VectorXf probe(n);
+                for (int i = 0; i < n; ++i) probe[i] = static_cast<float>(i);
+                const float expected = static_cast<float>(n) * static_cast<float>(n - 1) / 2.0f;
+                const float got = run_reduction(probe, "reduce_sum_subgroup.comp.spv", 0.0f,
+                                                [](float x, float y){ return x + y; });
+                if (got != expected) { pass = false; break; }
+            }
+        } catch (const std::exception&) {
+            pass = false;
+        }
+        if (!pass) {
+            ctx.subgroupCanReduce = false;
+            std::cerr << "[Vulkan] Subgroup-shuffle reduction failed self-test on this driver; "
+                         "using barrier-tree reduction\n";
+        }
+        return pass;
+    }();
+    return ok;
+}
+
 static ReduceBackend g_reduceBackend = ReduceBackend::Auto;
 void set_reduce_backend(ReduceBackend b) { g_reduceBackend = b; }
 ReduceBackend get_reduce_backend() { return g_reduceBackend; }
-bool subgroup_reduce_available() { return VulkanContext::get().subgroupCanReduce; }
+bool subgroup_reduce_available() { return subgroup_reduce_verified(); }
 
 float vulkan_reduce_sum(const Eigen::VectorXf& a) {
     try {
@@ -1484,7 +1517,7 @@ float vulkan_reduce_sum(const Eigen::VectorXf& a) {
     // the barrier tree remains the portable fallback. Both use a 256-wide group.
     const bool useSubgroup =
         (g_reduceBackend == ReduceBackend::Subgroup) ||
-        (g_reduceBackend == ReduceBackend::Auto && ctx.subgroupCanReduce);
+        (g_reduceBackend == ReduceBackend::Auto && subgroup_reduce_verified());
     const char* shader = useSubgroup ? "reduce_sum_subgroup.comp.spv" : "reduce_sum.comp.spv";
     return run_reduction(a, shader, 0.0f, [](float x, float y){ return x + y; });
     } catch (const std::exception&) {
